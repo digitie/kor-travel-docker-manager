@@ -1,3 +1,15 @@
+## 2026-11-23 — T-READ-MGR-02~06 운영 적용과 결정(n150)
+
+- **실측 창**: 2026-11-22 22:59Z~11-23 02:37Z, 2분 간격(cgroup v2 메모리·swap, PSI, `pg_stat_*`, `pg_stat_statements`, Valkey INFO). 다른 세션의 test gate·e2e가 돌던 창이라 PSI io `some` avg60 중앙값이 적용 전 57%였다. 적용 뒤 창은 약 1.2시간이라 WAL·checkpoint 수치는 경향으로만 본다.
+- **적용(unit `readperf-t1123a`, 01:02Z)**: Manager `d690e82d`(#628) 설치 → `pin rebind-execution` → `pin verify` 0 → Map writer freeze·Dagster run 0 → `postgresql.auto.conf` 빈 것 확인 → `CHECKPOINT` → 전역 lock 아래 공용 PG `up -d --no-deps`(32초 뒤 healthy) → Prometheus `--force-recreate`(설정 bind mount가 옛 release를 가리킨다) → 같은 pair 수렴(`run-pinned-rebuild-once`, committed) → 공개 엔드포인트 3개 200·`pin verify` 0 → unfreeze. n150 root `.env`에 `KTDM_PG_CHECKPOINT_TIMEOUT=15min`, `KTDM_PG_WAL_COMPRESSION=lz4`(compose 기본값은 그대로 — 호스트별 값). 비밀·DB 자격증명·Valkey 비밀번호는 바꾸지 않았다.
+- **MGR-03 ①(적용)**: Map API·PinVi API `mem_limit == memswap_limit` 1 GiB. 전: memory.peak 223·254 MB, 기동 2시간 만에 swap 92·58 MB, Map `/health` 표본 81개 중 1개가 20초 timeout. 후: peak 196·218 MB, swap 0(`memory.swap.max=0`), OOM 0.
+- **MGR-02(PinVi 적용)**: Prometheus `pinvi-api` target `up=1`.
+- **MGR-06(적용)**: `pg_waldump --stats`에서 WAL 바이트의 75%가 FPI, checkpoint는 11-15 이후 시간 주기 2219회·요청 4회(`max_wal_size`는 제약 아님), CPU 압력 약 5%. 그래서 `checkpoint_timeout` 5분 → 15분과 `wal_compression` off → lz4를 한 창에 넣었다 — 계획의 "창마다 값 하나"와 다르지만, FPI 건수(주기 효과)와 FPI 크기(압축 효과)를 따로 셀 수 있고 전 테넌트 순단을 한 번으로 줄인다. 시간당 전 2.0 h → 후 1.2 h: checkpoint 11.9 → 4.3회, checkpoint fsync 100 → 0.1초, WAL 214 → 133 MB, FPI당 WAL 약 6.9 → 2.9 KB, client backend 평균 읽기 5.4 → 1.0 ms(부하 차이 포함). checkpointer 쓰기 157 → 166 MB/h는 부하 차이로 판단 보류 — 하루 단위로 다시 잰다.
+- **MGR-06 ② Valkey**: 지금 저장 주기는 `save 900 1`대로 약 910초(하루 96회). 계획의 "약 300초마다 fork"는 n150 디스크 가득참(11-13 10:49, 11-15 02:17~03:47 `No space left on device`) 동안 bgsave가 5초마다 재시도한 것이었다(11-15 하루 906회). 설정은 바꾸지 않는다. 그 뒤 Valkey 컨테이너의 docker 로그가 11-15 03:47에서 멈춰 있다.
+- **MGR-04(미룸)**: 공용 PG 읽기 적중률 99.4%, 평균 읽기 0.4~1 ms라 대부분 페이지 캐시에서 나온다. 읽기 비용 1위는 Dagster `DELETE FROM job_ticks`(69.6만 회, 실행 19,297초, 읽기 78.8 GB, 11-15 이후)이고 `dagster_shared` 전체 실행 시간 57,189초가 Map DB 37,074초보다 크다. `shared_buffers`로 줄지 않는 비용이고 MGR-06 효과 측정과 겹치지 않게 미룬다.
+- **미룸**: Map `/metrics`(MGR-03 ②·02 Map 몫) — C6c가 운영 Map API의 `PROMETHEUS_METRICS_ENABLED=false`를 literal로 잠그고 실행 env도 대조해 보안 계약 변경이 필요하다. UI 두 개의 상한 — peak 223·149 MB, swap 7·31 MB이나 Node가 cgroup 상한으로 heap 한도를 줄여 JS heap OOM 위험. MGR-05 — odroid(Codex 영역).
+- **되돌림**: Manager는 `install-mgr.sh db78d1a869c6abd8b5218bb91a2b9bb98be5223b`(WH `/var/lib/kor-travel-docker-manager/manager627-offline-db78d1a869c6-n150/wheelhouse`) → rebind → verify → 같은 pair 수렴 → Prometheus 재생성. API 상한만은 `KTDM_{MAP,PINVI}_API_MEM_LIMIT=0` + 수렴. PG 두 값은 `.env.bak-readperf-t1123a-20261123T005934Z` 기준으로 키 원복 + 같은 절차로 PG 재생성.
+
 ## 2026-11-23 — T-READ-MGR-03 ①: API swap 차단, T-READ-MGR-02 일부: PinVi 지표 수집
 
 - 소유자 결정(2026-11-23 "속도개선건은 제안한 대로 진행")으로 보류했던 `03`·`02`를 재개했다. 정본은 Map 읽기 성능 계획 §8.
