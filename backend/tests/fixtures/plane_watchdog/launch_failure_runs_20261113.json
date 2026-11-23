@@ -1,0 +1,1245 @@
+{
+ "_source": "n150 dagster_shared 종료 run, update 2026-11-13 19:00~20:30Z — PinVi code-server fd 고갈 시작(19:36) 전후 (2026-11-24 읽기 전용 추출)",
+ "runs": [
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "f4e9917a-dafd-4e32-8c05-c42e322a8a08",
+   "status": "SUCCESS",
+   "created": 1794596400.157484,
+   "updated": 1794596408.420038,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_trip_day_rise_sets_job",
+   "run_id": "69c0ff58-6062-4f49-8fdc-00231749b77c",
+   "status": "SUCCESS",
+   "created": 1794596400.159693,
+   "updated": 1794596410.344472,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_trip_day_rise_sets_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_email_outbox_job",
+   "run_id": "4246eff7-4663-4b99-acb1-02ef6e756a90",
+   "status": "SUCCESS",
+   "created": 1794596400.175774,
+   "updated": 1794596411.838383,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_email_outbox_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_system_outbox_job",
+   "run_id": "0359596d-62ad-4711-9597-58dc14183820",
+   "status": "SUCCESS",
+   "created": 1794596400.188179,
+   "updated": 1794596413.334263,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_system_outbox_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "eff74e0c-199d-450e-b196-8e76099c532f",
+   "status": "SUCCESS",
+   "created": 1794596460.084174,
+   "updated": 1794596468.359517,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "3d2452bf-a5c4-4ce3-b8b7-f17174f59512",
+   "status": "SUCCESS",
+   "created": 1794596520.144286,
+   "updated": 1794596528.787329,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "c3114f73-8a3c-4df1-86e2-426ac2664d43",
+   "status": "SUCCESS",
+   "created": 1794596580.158462,
+   "updated": 1794596591.538913,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "dc717cc2-d1e5-4dd5-9f4d-1a5e3d8fedd8",
+   "status": "SUCCESS",
+   "created": 1794596580.133645,
+   "updated": 1794596594.872763,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "3a7f8004-5ef5-4a92-ae61-9c2b213d10a8",
+   "status": "SUCCESS",
+   "created": 1794596612.616672,
+   "updated": 1794596619.913389,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "6bad77e7-f5a6-436b-90a5-c6c263e6729a",
+   "status": "SUCCESS",
+   "created": 1794596632.81323,
+   "updated": 1794596650.610497,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "d16df348-5cb9-48b4-a0fd-23160c5d5c33",
+   "status": "SUCCESS",
+   "created": 1794596640.085643,
+   "updated": 1794596651.338805,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "235e8b85-0386-4171-b2af-df73b22e2237",
+   "status": "SUCCESS",
+   "created": 1794596700.085541,
+   "updated": 1794596709.913211,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "2609ae91-8900-4c56-827a-751f8d971ed6",
+   "status": "SUCCESS",
+   "created": 1794596760.086632,
+   "updated": 1794596770.153273,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "29c532bf-e8d6-45d8-9160-a71ff7dd1be1",
+   "status": "SUCCESS",
+   "created": 1794596820.116641,
+   "updated": 1794596830.70324,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "330021db-ea73-44f9-bb2d-a8c994e76fbd",
+   "status": "SUCCESS",
+   "created": 1794596880.082439,
+   "updated": 1794596891.171664,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "e99bfb43-0bd8-4eab-b3ac-973211bd6612",
+   "status": "SUCCESS",
+   "created": 1794596922.762077,
+   "updated": 1794596952.568292,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "90a4c0fd-ae20-432b-ad0c-bf0a95f2f6fe",
+   "status": "SUCCESS",
+   "created": 1794596940.093077,
+   "updated": 1794596953.375371,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "ab696546-6278-4ef1-9cd3-d634daf08cdd",
+   "status": "SUCCESS",
+   "created": 1794596957.976375,
+   "updated": 1794596982.548129,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "ef20293e-9eb7-4853-83ee-3e8e0216c85a",
+   "status": "SUCCESS",
+   "created": 1794597000.073943,
+   "updated": 1794597012.196353,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "275a1e1a-c48c-4673-8dc4-6270653acd82",
+   "status": "SUCCESS",
+   "created": 1794597060.067231,
+   "updated": 1794597072.702766,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "742cd6c5-b9be-40ee-8780-602aa2524bf6",
+   "status": "SUCCESS",
+   "created": 1794597120.098069,
+   "updated": 1794597133.758819,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "dd68866c-11d7-4929-9925-0b2104d00b45",
+   "status": "SUCCESS",
+   "created": 1794597180.130197,
+   "updated": 1794597196.805468,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "eedb17c9-1314-4c63-b561-9bc5bbff35fc",
+   "status": "SUCCESS",
+   "created": 1794597180.116455,
+   "updated": 1794597200.381477,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "34d93011-325b-4d8c-9d0a-fb1b820a44a1",
+   "status": "SUCCESS",
+   "created": 1794597227.910573,
+   "updated": 1794597255.253196,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "7173f303-d419-4b23-b4cd-b36d06d7f007",
+   "status": "SUCCESS",
+   "created": 1794597240.101046,
+   "updated": 1794597256.019027,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "f17af120-7daa-4085-a98e-728dea62367b",
+   "status": "SUCCESS",
+   "created": 1794597258.081322,
+   "updated": 1794597285.263027,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_email_outbox_job",
+   "run_id": "65383a18-ee74-45e3-bb1a-8a40cc34f1fc",
+   "status": "SUCCESS",
+   "created": 1794597300.130427,
+   "updated": 1794597315.500729,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_email_outbox_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_pii_retention_job",
+   "run_id": "ebac19bf-9622-494f-b52d-2d867aeb7934",
+   "status": "SUCCESS",
+   "created": 1794597300.162487,
+   "updated": 1794597317.207821,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_pii_retention_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_system_outbox_job",
+   "run_id": "474e7d51-052a-4477-aa1e-f8dade4595f3",
+   "status": "SUCCESS",
+   "created": 1794597300.167578,
+   "updated": 1794597321.185795,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_system_outbox_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "055dca72-62e5-4ca5-bca4-319b24115804",
+   "status": "SUCCESS",
+   "created": 1794597300.380522,
+   "updated": 1794597322.669641,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "cache_target_snapshot_gc",
+   "run_id": "38006626-4115-44da-ac00-eefd4477681b",
+   "status": "SUCCESS",
+   "created": 1794597300.16367,
+   "updated": 1794597323.907662,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "cache_target_snapshot_gc_hourly_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "324e2d98-d2f0-4ca7-8e96-118e87c50c44",
+   "status": "SUCCESS",
+   "created": 1794597360.092465,
+   "updated": 1794597375.160018,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "64d2ab96-9b9f-4cd9-abb9-14c794395a4c",
+   "status": "SUCCESS",
+   "created": 1794597420.127278,
+   "updated": 1794597437.544398,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "beb712c0-aba9-4501-b8d8-7dffd54ea5f2",
+   "status": "SUCCESS",
+   "created": 1794597480.080356,
+   "updated": 1794597495.784368,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "transport_state_fuel_stations",
+   "run_id": "ec1a3e83-af36-4b20-b28b-7c0bda7e85c2",
+   "status": "SUCCESS",
+   "created": 1794597420.10817,
+   "updated": 1794597505.253022,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_fuel_stations_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "012ca5b4-ec92-460c-ad8d-b99788003b6f",
+   "status": "SUCCESS",
+   "created": 1794597532.974366,
+   "updated": 1794597556.757015,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "7df4f6a2-e25b-45d0-9e0d-f1596d2807a6",
+   "status": "SUCCESS",
+   "created": 1794597540.096453,
+   "updated": 1794597557.57464,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "cc16c249-2a5a-4804-ac60-259ca0e97886",
+   "status": "SUCCESS",
+   "created": 1794597558.141227,
+   "updated": 1794597586.814622,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "216955c8-4612-4165-b1de-4324037c1c4e",
+   "status": "SUCCESS",
+   "created": 1794597600.160647,
+   "updated": 1794597619.596297,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_trip_day_rise_sets_job",
+   "run_id": "e9a946b8-bb4b-44d2-a867-69c70b3acf17",
+   "status": "SUCCESS",
+   "created": 1794597600.161598,
+   "updated": 1794597621.46016,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_trip_day_rise_sets_schedule",
+   "never_started": false
+  },
+  {
+   "job": "manual_provider_dedup_detection",
+   "run_id": "1ce1123b-4c71-4eb8-aac9-8fb3a3a880c3",
+   "status": "SUCCESS",
+   "created": 1794597600.135911,
+   "updated": 1794597622.121456,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "manual_provider_dedup_detection_daily_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "3572e7e9-ac47-4bff-b8e2-e708108be97b",
+   "status": "SUCCESS",
+   "created": 1794597660.076446,
+   "updated": 1794597676.890127,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "9e9842c0-f70c-4065-b80d-7e76d8ba4508",
+   "status": "SUCCESS",
+   "created": 1794597720.097362,
+   "updated": 1794597737.218179,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "885286ad-372c-4d1d-9f30-6086bc5481df",
+   "status": "SUCCESS",
+   "created": 1794597780.093559,
+   "updated": 1794597800.194133,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "389d1062-62af-49b8-8da6-603c3f99c224",
+   "status": "SUCCESS",
+   "created": 1794597780.072644,
+   "updated": 1794597815.769344,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "6f31bfe7-1ed5-436a-a658-c343c5dd70e8",
+   "status": "SUCCESS",
+   "created": 1794597838.150956,
+   "updated": 1794597859.092128,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "63d35c9d-f18d-4ace-871e-61d79b4249f1",
+   "status": "SUCCESS",
+   "created": 1794597840.081514,
+   "updated": 1794597859.995598,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "9400046f-4906-4640-883e-1ca4bf846212",
+   "status": "SUCCESS",
+   "created": 1794597873.172562,
+   "updated": 1794597889.070392,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "e68ac545-86cd-4f8c-b686-f28cd9c88ec5",
+   "status": "SUCCESS",
+   "created": 1794597900.081584,
+   "updated": 1794597921.127709,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "b223bf70-207a-415e-808c-59be1b44a1ad",
+   "status": "SUCCESS",
+   "created": 1794597960.075244,
+   "updated": 1794597979.225595,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "58ac7784-db7d-431c-a659-7174a30684be",
+   "status": "SUCCESS",
+   "created": 1794598020.151568,
+   "updated": 1794598042.166423,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "transport_state_rest_area_fuel_prices",
+   "run_id": "88e77d03-ae01-47b6-ac0f-d4a3d934aa1d",
+   "status": "SUCCESS",
+   "created": 1794598020.13126,
+   "updated": 1794598045.021834,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_rest_area_fuel_prices_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "c725ca59-c2df-4651-8fad-fb3bfda7876a",
+   "status": "SUCCESS",
+   "created": 1794598080.099568,
+   "updated": 1794598100.032034,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "weather_state_current",
+   "run_id": "d6401392-aaeb-48ef-baaa-812fe9a5f686",
+   "status": "SUCCESS",
+   "created": 1794597900.065928,
+   "updated": 1794598112.184637,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "weather_state_current_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "0fe646ca-1a9f-4e57-9e0c-0d134a7f0bbb",
+   "status": "SUCCESS",
+   "created": 1794598138.236446,
+   "updated": 1794598161.470668,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "e8fd6fbb-2a62-404a-b67c-b8435a376c8d",
+   "status": "SUCCESS",
+   "created": 1794598140.075749,
+   "updated": 1794598162.281646,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "ebdfacb2-50b0-4a56-af16-ee88f7621461",
+   "status": "SUCCESS",
+   "created": 1794598168.150412,
+   "updated": 1794598191.581082,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_system_outbox_job",
+   "run_id": "67665e37-47e3-4724-a942-e24262330645",
+   "status": "SUCCESS",
+   "created": 1794598200.153602,
+   "updated": 1794598221.831546,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_system_outbox_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_email_outbox_job",
+   "run_id": "1142c839-09d5-44a9-a774-a8f4cf8d8853",
+   "status": "SUCCESS",
+   "created": 1794598200.169753,
+   "updated": 1794598223.669601,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_email_outbox_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_location_log_archive_job",
+   "run_id": "7149bcbc-ddff-46d4-b31f-841766b20d71",
+   "status": "SUCCESS",
+   "created": 1794598200.189119,
+   "updated": 1794598225.401921,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_location_log_archive_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "42f08b77-b792-4fe5-b79a-d28471977814",
+   "status": "SUCCESS",
+   "created": 1794598200.203236,
+   "updated": 1794598226.8443,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "a698ea1d-d60a-4ad9-82bc-445f3de6b836",
+   "status": "SUCCESS",
+   "created": 1794598260.087827,
+   "updated": 1794598281.582791,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "d86d5748-05c6-43d3-936f-0a520eac46eb",
+   "status": "SUCCESS",
+   "created": 1794598320.088194,
+   "updated": 1794598342.285419,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "6dae7cef-0ac7-4075-a5ce-0e7fee345389",
+   "status": "SUCCESS",
+   "created": 1794598380.141233,
+   "updated": 1794598404.860066,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "89776524-843d-4e15-b312-a5d3ed2c9da0",
+   "status": "SUCCESS",
+   "created": 1794598380.12184,
+   "updated": 1794598407.697699,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "68edbe2b-e2bc-4425-9917-342dff5d5116",
+   "status": "SUCCESS",
+   "created": 1794598440.083056,
+   "updated": 1794598462.234377,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "7da3f283-2243-4afb-8aa1-423c6e48450f",
+   "status": "SUCCESS",
+   "created": 1794598443.340694,
+   "updated": 1794598464.371421,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "4aa0c5cf-cc30-4038-b651-f1b9dd51f902",
+   "status": "SUCCESS",
+   "created": 1794598473.436851,
+   "updated": 1794598492.833033,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "4f8cf44e-c31b-4e1a-a043-cdfea508b05d",
+   "status": "SUCCESS",
+   "created": 1794598500.092359,
+   "updated": 1794598524.815841,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "feature_event_visitkorea_festivals_job",
+   "run_id": "fbf957ba-f49a-41bd-8648-f1428afa5e17",
+   "status": "SUCCESS",
+   "created": 1794598500.069116,
+   "updated": 1794598540.095761,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "feature_event_visitkorea_festivals_daily_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "1ca6ecd8-8ef1-46aa-912a-1f6208243c45",
+   "status": "SUCCESS",
+   "created": 1794598560.091926,
+   "updated": 1794598582.994603,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": false
+  },
+  {
+   "job": "feature_operation_completion",
+   "run_id": "73ebba87-94b3-4194-bba1-8150933bdbb0",
+   "status": "SUCCESS",
+   "created": 1794598563.649835,
+   "updated": 1794598588.841048,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "weather_state_locations",
+   "run_id": "88c40023-428b-4da0-b7bb-24787385b893",
+   "status": "SUCCESS",
+   "created": 1794598620.117884,
+   "updated": 1794598648.683171,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "weather_state_locations_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "a3d1fc9d-e344-4016-80b3-2796d6a68b2f",
+   "status": "SUCCESS",
+   "created": 1794598743.419485,
+   "updated": 1794598764.504462,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "b7c568d1-ba8b-4b64-91b6-c8972f314f9c",
+   "status": "SUCCESS",
+   "created": 1794598773.396028,
+   "updated": 1794598795.164802,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "b0467a60-fd81-407f-bcfd-b197dfefd7d2",
+   "status": "FAILURE",
+   "created": 1794598620.120196,
+   "updated": 1794598851.547313,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": true
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "a592be63-d8f7-4bba-988b-fd8b1f900050",
+   "status": "SUCCESS",
+   "created": 1794598980.088169,
+   "updated": 1794599014.873324,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "a07795fc-1a62-4c57-a247-9057446b49fb",
+   "status": "SUCCESS",
+   "created": 1794599048.470588,
+   "updated": 1794599066.997371,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_trip_day_rise_sets_job",
+   "run_id": "3ebf63cb-55be-436e-8009-b160f4bfb5bb",
+   "status": "FAILURE",
+   "created": 1794598800.164284,
+   "updated": 1794599093.229488,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_trip_day_rise_sets_schedule",
+   "never_started": true
+  },
+  {
+   "job": "weather_state_current",
+   "run_id": "bd181c29-f827-415c-90b0-374fba1512f7",
+   "status": "SUCCESS",
+   "created": 1794598800.142454,
+   "updated": 1794599096.6311,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "weather_state_current_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "54fdb53d-de44-4049-94c1-56f483b9af97",
+   "status": "SUCCESS",
+   "created": 1794599068.591822,
+   "updated": 1794599097.821623,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "transport_state_rest_areas",
+   "run_id": "d7d2dcbb-e13c-464b-becd-83880480284c",
+   "status": "SUCCESS",
+   "created": 1794599220.088234,
+   "updated": 1794599252.633689,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_rest_areas_schedule",
+   "never_started": false
+  },
+  {
+   "job": "weather_state_daily_summaries",
+   "run_id": "6ddffbd7-b064-4685-a17f-6068b32093b0",
+   "status": "SUCCESS",
+   "created": 1794598860.080486,
+   "updated": 1794599295.536275,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "weather_state_daily_summaries_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "baed62bb-18ef-40bb-be29-51621a594285",
+   "status": "FAILURE",
+   "created": 1794598860.088558,
+   "updated": 1794599335.070498,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": true
+  },
+  {
+   "job": "weather_state_forecast_ultra_short",
+   "run_id": "281907e9-bbb4-49b4-822f-b69e2fc3880d",
+   "status": "SUCCESS",
+   "created": 1794599280.11114,
+   "updated": 1794599359.041336,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "weather_state_forecast_ultra_short_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "141b34e7-9a60-417a-ad6e-0a0a822d904e",
+   "status": "SUCCESS",
+   "created": 1794599358.493801,
+   "updated": 1794599369.261102,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "616cd4ec-608b-46f8-98cb-c6ea5561ba4d",
+   "status": "SUCCESS",
+   "created": 1794599383.672199,
+   "updated": 1794599400.372328,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_system_outbox_job",
+   "run_id": "461f8f9c-05cc-4358-9888-e079b2b26aa6",
+   "status": "FAILURE",
+   "created": 1794599100.11899,
+   "updated": 1794599576.740596,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_system_outbox_schedule",
+   "never_started": true
+  },
+  {
+   "job": "transport_state_airports",
+   "run_id": "961bbee5-d4f4-4832-b71d-190577f6a058",
+   "status": "SUCCESS",
+   "created": 1794599580.124588,
+   "updated": 1794599615.757284,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_airports_schedule",
+   "never_started": false
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "c7bc9c6f-4c1a-4084-af41-a1f66bd85b45",
+   "status": "SUCCESS",
+   "created": 1794599580.125761,
+   "updated": 1794599617.538222,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "e80bd022-3f76-4e1d-9c28-817c5d34572c",
+   "status": "SUCCESS",
+   "created": 1794599658.786981,
+   "updated": 1794599671.84395,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "32bf921d-dce8-442f-9483-69cb53e08e7f",
+   "status": "SUCCESS",
+   "created": 1794599683.626401,
+   "updated": 1794599702.288528,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_feature_exports",
+   "run_id": "df531cee-68e4-49e2-9d70-2fa733699c37",
+   "status": "SUCCESS",
+   "created": 1794599778.743689,
+   "updated": 1794599794.062078,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_admin_region_refresh",
+   "run_id": "42757041-0c63-4fc7-b4ce-b8c588bd9893",
+   "status": "SUCCESS",
+   "created": 1794599778.818238,
+   "updated": 1794599795.132538,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_email_outbox_job",
+   "run_id": "799900fe-10bf-4985-b690-57ebeb01bc5a",
+   "status": "FAILURE",
+   "created": 1794599100.120975,
+   "updated": 1794599819.039673,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_email_outbox_schedule",
+   "never_started": true
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "be2c2d47-3cb6-46ae-895b-b88457bf535c",
+   "status": "SUCCESS",
+   "created": 1794599958.861977,
+   "updated": 1794599973.748397,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "97f13ec3-b3c8-4d82-a164-94dc43761544",
+   "status": "SUCCESS",
+   "created": 1794599978.840598,
+   "updated": 1794600004.543669,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "35577588-c40f-4662-b70b-cd523647e63f",
+   "status": "FAILURE",
+   "created": 1794599340.091584,
+   "updated": 1794600060.305627,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": true
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "6ec67a89-5889-41d5-b2d9-08a3732dafac",
+   "status": "SUCCESS",
+   "created": 1794600180.115271,
+   "updated": 1794600189.834722,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "919d925b-ef5a-48c7-afd9-f09dbbf859ab",
+   "status": "SUCCESS",
+   "created": 1794600268.892713,
+   "updated": 1794600275.691756,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_email_outbox_job",
+   "run_id": "77fea123-5bee-46de-989a-63480cad2d48",
+   "status": "FAILURE",
+   "created": 1794600000.167179,
+   "updated": 1794600301.930202,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_email_outbox_schedule",
+   "never_started": true
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "c24777ca-8991-469b-8d96-9250a0dc2030",
+   "status": "SUCCESS",
+   "created": 1794600283.842218,
+   "updated": 1794600306.432911,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_system_outbox_job",
+   "run_id": "76c28168-fb21-4e32-be4f-b8079aed5dc5",
+   "status": "FAILURE",
+   "created": 1794600000.173438,
+   "updated": 1794600543.348892,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_system_outbox_schedule",
+   "never_started": true
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "439a14bb-db8b-4f73-83fb-eeb34cc3fa07",
+   "status": "SUCCESS",
+   "created": 1794600568.882381,
+   "updated": 1794600577.587832,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "9f6023ca-d0f3-4aa2-8f75-da76f7d50a28",
+   "status": "SUCCESS",
+   "created": 1794600579.063067,
+   "updated": 1794600608.147858,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_weather_retention_horizon_job",
+   "run_id": "1784d24f-b849-48eb-a905-7eefa37fd9d9",
+   "status": "FAILURE",
+   "created": 1794600000.171338,
+   "updated": 1794600785.114254,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_weather_retention_horizon_schedule",
+   "never_started": true
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "aa47c409-f8f4-4561-a053-8ec7723a52ff",
+   "status": "SUCCESS",
+   "created": 1794600780.451,
+   "updated": 1794600793.432316,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "b889b80b-db66-4b76-8c18-d0346c6c460e",
+   "status": "SUCCESS",
+   "created": 1794600869.018015,
+   "updated": 1794600879.332484,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "4fd4b588-9b98-4fd2-b035-3b3ab6a03c10",
+   "status": "SUCCESS",
+   "created": 1794600889.222339,
+   "updated": 1794600910.313097,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "cache_target_snapshot_gc",
+   "run_id": "0725e1d7-11e0-45bc-bfb7-ff1a02ddf271",
+   "status": "SUCCESS",
+   "created": 1794600900.144709,
+   "updated": 1794600914.950082,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "cache_target_snapshot_gc_hourly_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_trip_day_rise_sets_job",
+   "run_id": "1a8197d3-3cdc-43c1-8873-18d585ca0b89",
+   "status": "FAILURE",
+   "created": 1794600000.231911,
+   "updated": 1794601026.343477,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_trip_day_rise_sets_schedule",
+   "never_started": true
+  },
+  {
+   "job": "transport_state_fuel_stations",
+   "run_id": "77a8e881-6845-4bb4-a5da-ef7beb379778",
+   "status": "SUCCESS",
+   "created": 1794601020.099107,
+   "updated": 1794601107.122486,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_fuel_stations_schedule",
+   "never_started": false
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "8202f91c-76c3-43a5-9963-431d12863560",
+   "status": "SUCCESS",
+   "created": 1794601179.248917,
+   "updated": 1794601211.973512,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "4312c25d-92f2-4f4a-b533-61ed225ae75f",
+   "status": "SUCCESS",
+   "created": 1794601214.245999,
+   "updated": 1794601242.818348,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_notification_planner_job",
+   "run_id": "d913ce5f-2a47-4d5d-bb01-2e3972246c1a",
+   "status": "FAILURE",
+   "created": 1794600120.097952,
+   "updated": 1794601270.62588,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_notification_planner_schedule",
+   "never_started": true
+  },
+  {
+   "job": "feature_notice_krforest_landslide_forecast_issues_job",
+   "run_id": "7e95c2f2-2102-4147-ae24-7c4824d6ae3d",
+   "status": "SUCCESS",
+   "created": 1794601200.158249,
+   "updated": 1794601305.144688,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "feature_notice_krforest_landslide_forecast_issues_six_daily_schedule",
+   "never_started": false
+  },
+  {
+   "job": "feature_operation_completion",
+   "run_id": "aea547da-1527-41c2-bbb2-40d5f92c5f17",
+   "status": "SUCCESS",
+   "created": 1794601307.581628,
+   "updated": 1794601344.104068,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "transport_state_highway_incidents",
+   "run_id": "a07e7be1-7265-48ef-aa05-d6fd84300e76",
+   "status": "SUCCESS",
+   "created": 1794601380.080403,
+   "updated": 1794601410.173963,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_highway_incidents_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_telegram_system_outbox_job",
+   "run_id": "27da9cf0-3038-404e-bb42-fc5d9e4aed48",
+   "status": "FAILURE",
+   "created": 1794600900.184346,
+   "updated": 1794601509.011326,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_telegram_system_outbox_schedule",
+   "never_started": true
+  },
+  {
+   "job": "concierge_source_scan",
+   "run_id": "14ce91d0-ff56-4127-a8e7-1b6bbc9cedbc",
+   "status": "SUCCESS",
+   "created": 1794601482.500512,
+   "updated": 1794601513.622802,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "concierge_batch",
+   "run_id": "3fbde645-5cfe-445c-be3b-c9eb689e2e43",
+   "status": "SUCCESS",
+   "created": 1794601517.50989,
+   "updated": 1794601543.296354,
+   "location": "ktc.dagster.definitions",
+   "schedule": null,
+   "never_started": false
+  },
+  {
+   "job": "transport_state_rest_area_fuel_prices",
+   "run_id": "67a65b55-4757-468d-bac0-4f1863c63597",
+   "status": "SUCCESS",
+   "created": 1794601620.114608,
+   "updated": 1794601637.690614,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "transport_state_rest_area_fuel_prices_schedule",
+   "never_started": false
+  },
+  {
+   "job": "weather_state_current",
+   "run_id": "75f3894f-cb80-46d4-972e-6005fcc3b922",
+   "status": "SUCCESS",
+   "created": 1794601500.116465,
+   "updated": 1794601702.065471,
+   "location": "kortravelmap.dagster.definitions",
+   "schedule": "weather_state_current_schedule",
+   "never_started": false
+  },
+  {
+   "job": "pinvi_email_outbox_job",
+   "run_id": "6911d2fc-efa4-4fa2-9702-41e439212b90",
+   "status": "FAILURE",
+   "created": 1794600900.185346,
+   "updated": 1794601750.566204,
+   "location": "pinvi.etl.definitions",
+   "schedule": "pinvi_email_outbox_schedule",
+   "never_started": true
+  }
+ ]
+}

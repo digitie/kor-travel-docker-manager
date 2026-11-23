@@ -1,0 +1,127 @@
+version: 1
+
+# 공용 Dagster plane 수집 감시(plane watchdog)의 임계값 정본이다. 설명·근거는
+# `docs/plane-watchdog.md`가 정본이고, 이 파일에는 값만 둔다 — 값을 코드에 기본값으로 다시
+# 적지 않는다(이 파일이 없거나 틀리면 감시는 평가하지 않고 화면에 "설정 오류"로 보인다).
+#
+# 감시는 Manager backend(systemd, Dagster 밖)의 백그라운드 루프가 돈다. Dagster daemon이나
+# code-server가 죽어도 이 감시는 돈다. storage는 공용 PostgreSQL을 읽기 전용 트랜잭션으로만
+# 질의한다.
+#
+# 기본값은 2026-11-23 수집 실패 감사의 실측에 맞춰 보수적으로 잡았다(오탐 최소화).
+
+# 평가 주기(초).
+interval_seconds: 120
+
+storage:
+  # 질의 하나의 상한. odroid는 CPU 포화로 가벼운 질의도 수 초가 걸린다(감사 §2.6).
+  # 시작 직후 첫 질의(종료 run 12시간)가 odroid(load 23)에서 30초 가까이 걸렸다(2026-11-24 실측).
+  statement_timeout_seconds: 60
+  # 시작할 때 읽어 오는 종료 run의 범위(시간). 이보다 긴 창이 필요한 schedule은 그 job의 최근
+  # run만 따로 읽는다(6시간마다).
+  bootstrap_hours: 12
+  # 이 횟수만큼 연속으로 storage 질의가 실패해야 "storage에 닿지 못함" 경보를 낸다.
+  unreachable_after_failures: 2
+
+rules:
+  # location별 "N분간 tick 없음". location 안 활성 schedule·sensor의 기대 간격 중 가장 짧은
+  # 것에 cadence_multiplier를 곱한 값과 min_silence_minutes 중 큰 쪽을 넘으면 낸다.
+  # 감사의 실측 정지: odroid weather 11-19 17:15~20:20(3시간 5분), transport 11-20 1시간.
+  location_tick_stall:
+    enabled: true
+    severity: critical
+    min_silence_minutes: 30
+    cadence_multiplier: 3
+    # DB의 instigator status는 믿을 수 없다(odroid transport는 STOPPED로 기록된 채 돈다).
+    # 이 시간 안에 tick이 있었던 schedule·sensor도 활성으로 센다.
+    activity_lookback_hours: 24
+
+  # schedule별 "k주기 동안 SUCCESS 없음". 창 = cycles × cron 최대 간격 + grace.
+  # 창 안에 종료 run이 있는데 성공이 0이면 낸다. 감사: 특보 이벤트 11-18 07:05부터 100% 실패.
+  schedule_no_success:
+    enabled: true
+    severity: critical
+    cycles: 3
+    grace_minutes: 30
+
+  # location별 "schedule·sensor의 최근 tick count개가 모두 FAILURE". 같은 OSError(fd 고갈 등)로
+  # sensor가 연속 실패하는 것을 잡는다 — 감사: n150 PinVi 11-13 19:36~16 02:40(55시간)·concierge
+  # 11-14 07:22~18 11:02(100시간) 동안 code-server fd 고갈로 sensor·launch가 전부 실패했는데
+  # 컨테이너 healthcheck는 healthy였다. 오류가 EMFILE이면 code-server 재시작을 제안한다(자동 재시작 없음).
+  tick_failures:
+    enabled: true
+    severity: critical
+    count: 3
+
+  # job별 "연속 실패 N회"(최근 종료 run부터 센다. CANCELED는 건너뛴다).
+  consecutive_failures:
+    enabled: true
+    severity: warning
+    count: 5
+    # 마지막 실패가 이 시간보다 오래됐으면(코드에서 사라진 job 등) 내지 않는다.
+    active_hours: 48
+
+  # location별 "run launch 연속 실패 N회"(시작하지 못하고 FAILURE가 된 run이 연달아). 시작한 run이 하나라도
+  # 끼면 끊긴다. 위 fd 고갈 사건의 직접 증상이다.
+  launch_failure_streak:
+    enabled: true
+    severity: critical
+    count: 5
+    active_hours: 6
+
+  # run launch 실패율(시작하지 못하고 FAILURE가 된 run의 비율). 감사: n150 11-14 한 시간에
+  # 종료 46건 중 28건(61%)이 code-server fd 고갈로 launch 실패.
+  launch_failure_rate:
+    enabled: true
+    severity: critical
+    window_minutes: 60
+    min_failures: 5
+    min_ratio: 0.2
+
+  # 디스크 사용률(df의 Capacity와 같은 식). 경로를 비우면 Docker root, 공용 PostgreSQL 데이터
+  # mount, `/`를 자동으로 본다. 감사: 두 호스트 모두 11월에 한 번씩 가득 찼다(n150 83%·odroid 82%).
+  disk_usage:
+    enabled: true
+    warning_used_percent: 90
+    critical_used_percent: 95
+    paths: []
+
+  # IO 압력(PSI `/proc/pressure/io`의 full avg300, %). PSI가 꺼진 커널에서는 "확인 불가"다.
+  io_pressure:
+    enabled: true
+    severity: warning
+    full_avg300_percent: 30
+    # 이만큼 연속 평가에서 넘어야 낸다(일시 부하로 깨우지 않는다).
+    for_evaluations: 3
+
+  # Dagster 컨테이너 안 프로세스별(특히 code-server 안 `dagster api grpc`) 열린 fd / 그 pid의 nofile soft
+  # 한도의 최댓값. 감사: 평소 13~24개, 고갈 사건 때 soft 1024를 다 써 14일 launch 실패 1,888건.
+  # 평소 값의 수십 배라 50%에서 이미 누수다.
+  dagster_fd_usage:
+    enabled: true
+    warning_ratio: 0.5
+    critical_ratio: 0.8
+
+# location 정지를 감지하면 daemon과 그 location code-server의 스레드 상태를 파일로 남긴다.
+# 프로세스를 죽이거나 재시작하거나 signal을 보내지 않는다. py-spy가 있으면 Python 스택을,
+# 없으면 /proc의 스레드 상태·커널 대기 지점과 docker 로그 꼬리만 남긴다.
+diagnostics:
+  enabled: true
+  # 비우면 Manager 상태 root 아래 `plane-watchdog/diagnostics`.
+  directory: ""
+  # py-spy 실행 파일. 비우면 PATH에서 찾는다.
+  py_spy: ""
+  # 같은 location을 이 간격보다 자주 수집하지 않는다.
+  min_interval_minutes: 360
+  # 디렉터리가 이 개수를 넘으면 더 만들지 않는다(지우지 않는다 — 정리는 사람이 한다).
+  max_captures: 50
+  log_tail_minutes: 60
+
+# 외부 발송. 기본은 꺼져 있다 — 화면 경보 패널·상태 API·Manager 로그(journald)가 기본 경로다.
+# 발송 채널은 소유자가 정한다(Resend 이메일 연동은 보류, #720).
+notifiers:
+  webhook:
+    enabled: false
+    # URL은 비밀이므로 이 파일에 두지 않고 root `.env`의 이 변수에서 읽는다.
+    url_env: KTDM_ALERT_WEBHOOK_URL
+    timeout_seconds: 5

@@ -1,3 +1,10 @@
+## 2026-11-24 — 공용 Dagster plane 수집 감시(ADR-64)
+
+- [x] 경보 규칙·읽기 전용 storage 질의·진단 수집·화면 패널·상태 API·fd 지표(소스, 단위·e2e 시험). [자세히](plane-watchdog.md)
+- [ ] n150 설치(부모), odroid 설치(Codex) 뒤 첫 평가 확인: 화면 "수집 경보" 점검 항목이 "확인 불가" 없이 채워지는지, `/metrics`의 fd 지표.
+- [ ] 두 호스트 py-spy 설치(진단 스택용). 없으면 /proc 스레드 상태만 남는다.
+- [ ] 소유자 결정: 외부 발송 채널(webhook 수신처 등), code-server 자동 재시작 허용 여부.
+
 ## 2026-11-24 — 공용 PG 트랜잭션 유휴 세션 끊기
 
 - [x] `idle_in_transaction_session_timeout` 10분(compose·C6c 허용 목록·테스트·onboarding §14).

@@ -374,6 +374,79 @@ export type PinnedRebuildPreflight = {
   summary: { state: 'ok' | 'blocked' | 'unverified'; text: string };
 };
 
+export type PlaneAlertSeverity = 'critical' | 'warning';
+
+export type PlaneAlert = {
+  key: string;
+  rule: string;
+  rule_label: string;
+  subject: string;
+  severity: PlaneAlertSeverity;
+  title: string;
+  detail: string;
+  evidence: Record<string, unknown>;
+  since: string | null;
+  last_seen: string | null;
+  resolved_at: string | null;
+};
+
+export type PlaneAlertCheck = {
+  rule: string;
+  label: string;
+  state: 'ok' | 'firing' | 'unavailable' | 'disabled' | 'not_applicable';
+  detail: string;
+};
+
+/** `GET /api/v1/plane-alerts` — 공용 Dagster plane 수집 감시의 마지막 평가 결과(읽기 전용).
+ * Manager 백그라운드 루프가 평가한 것을 그대로 돌려준다 — 화면의 요청은 storage를 질의하지 않는다. */
+export type PlaneAlertsResponse = {
+  schema: string;
+  host: string | null;
+  plane_expected: boolean;
+  enabled: boolean;
+  config_error: string | null;
+  interval_seconds: number | null;
+  evaluated_at: string | null;
+  evaluation_age_seconds: number | null;
+  stale: boolean;
+  evaluation_error: string | null;
+  summary: {
+    state: 'ok' | 'firing' | 'unknown' | 'error';
+    text: string;
+    critical: number;
+    warning: number;
+  };
+  alerts: PlaneAlert[];
+  recent_resolved: PlaneAlert[];
+  checks: PlaneAlertCheck[];
+  locations: {
+    location: string;
+    last_tick_at: string | null;
+    silence_seconds: number;
+    threshold_seconds: number;
+    active_instigators: number;
+  }[];
+  dagster_fds: {
+    container: string;
+    process_kind: string;
+    pid: number | null;
+    locations: string[];
+    open_fds: number;
+    nofile_soft_limit: number | null;
+    ratio: number | null;
+    open_fds_total: number;
+  }[];
+  notifiers: {
+    name: string;
+    enabled: boolean;
+    configured: boolean;
+    url_env: string;
+    last_error: string | null;
+    last_sent_at: string | null;
+  }[];
+  diagnostics: { location: string; directory?: string; captured_at?: string; py_spy?: string; error?: string }[];
+};
+
 export type DiskUsageRow = {
   type: string;
   label_ko: string;

@@ -1,3 +1,19 @@
+## 2026-11-24 — 공용 Dagster plane 수집 감시(감사 §4 #1·#3·#19, ADR-64)
+
+- Manager backend 백그라운드 루프가 Dagster 밖에서 자기 호스트 plane을 판정한다: location tick 정지, schedule 주기 내 성공 없음,
+  schedule·sensor tick 연속 실패, job 연속 실패, location launch 연속 실패, launch 실패율, 디스크, IO PSI, Dagster 프로세스별 fd.
+  storage는 `docker exec … psql` 읽기 전용 트랜잭션, 결과는 대시보드 "수집 경보" 패널·`GET /api/v1/plane-alerts`·로그·`/metrics`.
+  외부 발송은 webhook 하나를 기본 꺼짐으로(채널은 소유자 결정). location 정지 때 진단 파일(py-spy 있으면 스택, 없으면 /proc 스레드
+  상태·로그). [자세히](plane-watchdog.md).
+- 두 호스트 읽기 전용 실측: 질의는 모두 Dagster 인덱스를 탄다(instigator·최근 tick n150 7.7 ms). odroid(load 23)에서 긴 창 schedule
+  질의가 EXISTS semi-join으로 22.6초 → 바깥 거르기로 바꿨다. DB instigator status는 믿을 수 없다(odroid transport는 STOPPED로 기록된 채
+  tick). schedule tag run만 보면 수동 성공을 놓쳐 오탐(Map MCST·등산로 월간) — job의 모든 run으로 성공을 센다. 실측 첫 평가에서 n150
+  `pinvi_weather_retention_horizon_job` "3주기(3일) 성공 없음"(감사 P1과 일치)만 울렸다.
+- py-spy는 두 호스트에 없다. 대상 Dagster 이미지에는 faulthandler·SIGUSR 처리기가 없어 signal 방식은 쓰지 않는다.
+- 감사 당시 실물(fixture): odroid weather location 11-19 17:15 정지 → 17:50 발화·20:22 해소, 특보 이벤트 11-18 07:52 발화,
+  n150 PinVi launch 11-13 19:57 발화(첫 시간 plane 전체 launch 실패율은 19%로 묽어 location 연속 규칙이 따로 필요), PinVi sensor tick
+  11-14 연속 실패(오류는 EMFILE 문구 없이 code-server 단절만 남음 → 재시작 제안 대상에 포함).
+
 ## 2026-11-24 — 공용 PG `idle_in_transaction_session_timeout` 10분(수집 실패 감사 §4 16)
 
 - 감사 §2.6 9: 공용 PG(n150·odroid)에 `idle_in_transaction_session_timeout`이 없다(n150 `SHOW` → `0`, 역할·DB 단위 설정도 없음).

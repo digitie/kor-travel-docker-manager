@@ -41,6 +41,7 @@ from kor_travel_docker_manager.services.pinned_rebuild_preflight import (
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     RuntimeSourceRole,
 )
+from kor_travel_docker_manager.services.plane_watchdog import plane_watchdog
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
@@ -446,6 +447,15 @@ def get_disk_usage(refresh: bool = Query(default=False)):
     어느 화면도 그것을 보여 주지 않았다. 관측만 한다 — `prune`은 파괴적이라 CLI 전용이고
     이 카드는 실행할 명령만 알려 준다."""
     return read_disk_usage(force_refresh=refresh)
+
+
+@router.get("/plane-alerts")
+def get_plane_alerts():
+    """공용 Dagster plane 수집 감시의 현재 경보와 점검 상태(읽기 전용).
+
+    Manager 백그라운드 루프가 마지막으로 평가한 결과를 그대로 돌려준다 — 요청이 storage를
+    질의하지 않는다. 진단 파일 경로 같은 호스트 내부 경로가 들어 있으므로 관리자 세션 뒤에만 둔다."""
+    return plane_watchdog.status_payload()
 
 
 @router.get("/deployment-readiness")

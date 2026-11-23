@@ -1,0 +1,215 @@
+{
+ "_source": "n150 dagster_shared, pinvi.etl.definitions sensor의 2026-11-14 05:13Z 이전 최근 tick 5개 (2026-11-24 읽기 전용 추출). 보존 정리(SKIPPED 7일·SUCCESS 14일)가 지난 뒤의 사본이라 당시보다 FAILURE가 촘촘하다 — 오류 문구는 실물이다.",
+ "instigators": [
+  {
+   "cron": null,
+   "name": "pinvi_infra_retry_pinvi_telegram_system_outbox_job",
+   "type": "SENSOR",
+   "status": "RUNNING",
+   "location": "pinvi.etl.definitions",
+   "min_interval": "60",
+   "recent_ticks": [
+    {
+     "at": 1794633106.925602,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_telegram_system_outbox_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to b",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794489105.470664,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_telegram_system_outbox_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to b",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480445.988502,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_telegram_system_outbox_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due t",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794479051.682545,
+     "error": "dagster._core.errors.SensorExecutionError: Error occurred during the execution of evaluation_fn for sensor pinvi_infra_retry_pinvi_telegram_system_outbox_job\n | kortravelcommon.deadline.DeadlineExceeded: 호출이 대기 상한을 초과했습니다.\n",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794478793.128398,
+     "error": "dagster._core.errors.SensorExecutionError: Error occurred during the execution of evaluation_fn for sensor pinvi_infra_retry_pinvi_telegram_system_outbox_job\n | kortravelcommon.deadline.DeadlineExceeded: 호출이 대기 상한을 초과했습니다.\n",
+     "status": "FAILURE"
+    }
+   ]
+  },
+  {
+   "cron": null,
+   "name": "pinvi_run_failure_sensor",
+   "type": "SENSOR",
+   "status": "RUNNING",
+   "location": "pinvi.etl.definitions",
+   "min_interval": "30",
+   "recent_ticks": [
+    {
+     "at": 1794633166.754896,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_run_failure_sensor. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due to taking longer than 60 se",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794633052.584013,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_run_failure_sensor. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to break up the sensor work in",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794632991.042729,
+     "error": "",
+     "status": "SUCCESS"
+    },
+    {
+     "at": 1794632743.045412,
+     "error": "",
+     "status": "SUCCESS"
+    },
+    {
+     "at": 1794632493.973803,
+     "error": "",
+     "status": "SUCCESS"
+    }
+   ]
+  },
+  {
+   "cron": null,
+   "name": "pinvi_infra_retry_pinvi_pii_retention_job",
+   "type": "SENSOR",
+   "status": "RUNNING",
+   "location": "pinvi.etl.definitions",
+   "min_interval": "60",
+   "recent_ticks": [
+    {
+     "at": 1794633170.575175,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_pii_retention_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due to taking ",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794633062.05242,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_pii_retention_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to break up t",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794489166.183796,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_pii_retention_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due to taking ",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480446.010462,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_pii_retention_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due to taking ",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794116206.10638,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_pii_retention_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to break up t",
+     "status": "FAILURE"
+    }
+   ]
+  },
+  {
+   "cron": null,
+   "name": "pinvi_infra_retry_pinvi_email_outbox_job",
+   "type": "SENSOR",
+   "status": "RUNNING",
+   "location": "pinvi.etl.definitions",
+   "min_interval": "60",
+   "recent_ticks": [
+    {
+     "at": 1794633171.447581,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_email_outbox_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due to taking l",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794633062.065569,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_email_outbox_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to break up th",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480455.55663,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_email_outbox_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due to taking l",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480339.653115,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_email_outbox_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to break up th",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794478435.549709,
+     "error": "dagster._core.errors.SensorExecutionError: Error occurred during the execution of evaluation_fn for sensor pinvi_infra_retry_pinvi_email_outbox_job\n | kortravelcommon.deadline.DeadlineExceeded: 호출이 대기 상한을 초과했습니다.\n",
+     "status": "FAILURE"
+    }
+   ]
+  },
+  {
+   "cron": null,
+   "name": "pinvi_infra_retry_pinvi_location_log_archive_job",
+   "type": "SENSOR",
+   "status": "RUNNING",
+   "location": "pinvi.etl.definitions",
+   "min_interval": "60",
+   "recent_ticks": [
+    {
+     "at": 1794633141.204986,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_location_log_archive_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: Could not reach user code server. gRPC Error code: CANCELLED\n",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794519821.242786,
+     "error": "dagster._core.errors.SensorExecutionError: Error occurred during the execution of evaluation_fn for sensor pinvi_infra_retry_pinvi_location_log_archive_job\n | kortravelcommon.deadline.DeadlineExceeded: 호출이 대기 상한을 초과했습니다.\n",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794489086.021061,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_location_log_archive_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to bre",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480455.854403,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_location_log_archive_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out due to ",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480354.735739,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_location_log_archive_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is to bre",
+     "status": "FAILURE"
+    }
+   ]
+  },
+  {
+   "cron": null,
+   "name": "pinvi_infra_retry_pinvi_weather_retention_horizon_job",
+   "type": "SENSOR",
+   "status": "RUNNING",
+   "location": "pinvi.etl.definitions",
+   "min_interval": "60",
+   "recent_ticks": [
+    {
+     "at": 1794633154.260083,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_weather_retention_horizon_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out du",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480455.669521,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_weather_retention_horizon_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterCodeLocationLoadError: Failure loading pinvi.etl.definitions: dagster._core.errors.DagsterUserCodeUnreachableError: User code server request timed out du",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794480346.255475,
+     "error": "dagster._core.errors.DagsterUserCodeUnreachableError: Unable to reach the user code server for sensor pinvi_infra_retry_pinvi_weather_retention_horizon_job. Sensor will resume execution once the server is available.\n | dagster._core.errors.DagsterUserCodeUnreachableError: The sensor tick timed out due to taking longer than 60 seconds to execute the sensor function. One way to avoid this error is t",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794478967.510429,
+     "error": "dagster._core.errors.SensorExecutionError: Error occurred during the execution of evaluation_fn for sensor pinvi_infra_retry_pinvi_weather_retention_horizon_job\n | kortravelcommon.deadline.DeadlineExceeded: 호출이 대기 상한을 초과했습니다.\n",
+     "status": "FAILURE"
+    },
+    {
+     "at": 1794478760.3719,
+     "error": "dagster._core.errors.SensorExecutionError: Error occurred during the execution of evaluation_fn for sensor pinvi_infra_retry_pinvi_weather_retention_horizon_job\n | kortravelcommon.deadline.DeadlineExceeded: 호출이 대기 상한을 초과했습니다.\n",
+     "status": "FAILURE"
+    }
+   ]
+  }
+ ]
+}

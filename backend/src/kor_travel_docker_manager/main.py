@@ -40,6 +40,7 @@ from kor_travel_docker_manager.services.metrics_collector import (
     metrics_collector,
 )
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.plane_watchdog import plane_watchdog
 from kor_travel_docker_manager.services.public_api_key_service import (
     PUBLIC_API_KEY_QUERY_PARAM,
 )
@@ -186,9 +187,16 @@ async def lifespan(app: FastAPI):
     logger.info("Starting log cleanup background task...")
     cleanup_task = asyncio.create_task(log_cleanup_loop())
 
+    # 공용 Dagster plane 수집 감시. Dagster 밖(이 프로세스)에서 돌아 plane이 멈춰도 경보가 난다.
+    logger.info("Starting plane watchdog...")
+    plane_watchdog.start()
+
     yield
 
     # Shutdown
+    logger.info("Stopping plane watchdog...")
+    plane_watchdog.stop()
+
     logger.info("Stopping metrics collection...")
     metrics_collector.stop()
 
@@ -421,9 +429,10 @@ def _metrics_auth_gate(
     dependencies=[Depends(_metrics_auth_gate)],
 )
 def prometheus_metrics() -> PlainTextResponse:
-    """Prometheus용 캐시 기반 컨테이너 상태·리소스 메트릭을 노출한다."""
+    """Prometheus용 캐시 기반 컨테이너 상태·리소스 메트릭과 plane 감시 지표를 노출한다."""
     return PlainTextResponse(
-        content=metrics_collector.render_prometheus_metrics(),
+        content=metrics_collector.render_prometheus_metrics()
+        + plane_watchdog.render_prometheus_metrics(),
         media_type=_PROMETHEUS_CONTENT_TYPE,
         headers={"Cache-Control": "no-store"},
     )

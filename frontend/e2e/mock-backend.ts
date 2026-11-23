@@ -7,7 +7,20 @@ export const demoContainer = { id: 'demo', name: 'demo-service', display_name: '
 
 export type MockBackend = { actions: () => number; errors: string[] };
 
-export async function mockBackend(page: Page, testInfo: TestInfo): Promise<MockBackend> {
+/** 경보 없는 수집 감시 응답(대시보드 본문의 수집 경보 패널). 시험이 `planeAlerts`로 바꿔 끼운다. */
+export const quietPlaneAlerts = {
+  schema: 'kor-travel-docker-manager.plane-alerts.v1', host: 'test-host', plane_expected: true, enabled: true,
+  config_error: null, interval_seconds: 120, evaluated_at: '2026-11-24T00:00:00Z', evaluation_age_seconds: 30,
+  stale: false, evaluation_error: null,
+  summary: { state: 'ok', text: '경보가 없습니다.', critical: 0, warning: 0 },
+  alerts: [], recent_resolved: [], locations: [], dagster_fds: [], diagnostics: [],
+  checks: [{ rule: 'location_tick_stall', label: 'location tick 정지', state: 'ok', detail: '' }],
+  notifiers: [{ name: 'webhook', enabled: false, configured: false, url_env: 'KTDM_ALERT_WEBHOOK_URL', last_error: null, last_sent_at: null }],
+};
+
+export async function mockBackend(
+  page: Page, testInfo: TestInfo, options: { planeAlerts?: unknown } = {},
+): Promise<MockBackend> {
   let authenticated = false;
   let actions = 0;
   const errors: string[] = [];
@@ -36,6 +49,7 @@ export async function mockBackend(page: Page, testInfo: TestInfo): Promise<MockB
     else if (path.endsWith('/runtime-pins')) body = { status: 'ok', source: 'test', summary: { state: 'ok', text: '검증 상태', next_action: '' },
       pins: { release_version: 1, pinset_sha256: 'b'.repeat(64), sources: [{ role: 'map', url: 'https://example.com/map.git', revision: 'c'.repeat(40) }],
         rotated_at: '2026-11-11T00:00:00Z', rotated_by: 'tester', reason: '검증' }, lifecycle: { blocked_pinsets: [], history: [] } };
+    else if (path.endsWith('/plane-alerts')) body = options.planeAlerts ?? quietPlaneAlerts;
     else if (path.endsWith('/disk-usage')) body = { state: 'unknown', summary: { text: '미확인', detail: '검증용 상태', next_action: '' } };
     else if (path === '/health') body = { status: 'healthy' };
     await route.fulfill({ status: 200, json: body, headers: {

@@ -1922,3 +1922,48 @@ pinvi·weather·transport standalone instance 사본과 같다(Dagster 1.13.24).
 
 - (open) 운영 적용: Manager 설치 뒤 `ktdctl dagster-plane converge --dry-run`/`--confirm`(소유자 일정).
 - (open) 적용 뒤 관찰: `dagster/retry_number` tag가 붙은 run이 pinvi 다섯 job 밖에서 생기지 않는지.
+
+## ADR-64: 공용 Dagster plane 수집 감시는 Manager backend가 Dagster 밖에서 돌린다
+
+- 상태: accepted — 소스 구현, 운영 설치 전(n150은 부모, odroid는 Codex)
+- 날짜: 2026-11-24
+- 결정자: 소유자 지시(수집 실패 감사 §4 #1·#3·#19 전부 진행), 구현은 Claude
+
+### 컨텍스트
+
+2026-11-23 수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md`)는 두 plane 모두 경보가 없어
+PinVi(11-13~16)·concierge(11-14~18) run 전부 실패, odroid 특보 이벤트 11-18부터 100% 실패를 아무도 몰랐다고 적었다.
+n150 사건은 code-server의 `dagster api grpc` 프로세스가 fd를 다 써 55·100시간 동안 launch·sensor가 실패한 것이었고
+컨테이너 healthcheck는 healthy였다. odroid weather location은 11-19 17:15~20:20 기록 없이 멈췄고 원인을 볼 스택이 없었다.
+Manager에는 기존 알림 발송 수단이 없다(Alertmanager는 두지 않는다 — ADR-58 결정 11, Resend 이메일은 보류 #720).
+
+### 결정
+
+Manager backend(systemd `ktdm-backend`)의 백그라운드 루프가 자기 호스트 plane의 Dagster storage(`dagster_shared`)를
+`docker exec … psql` 읽기 전용 트랜잭션으로 질의하고 호스트(디스크·PSI·Dagster 프로세스 fd)를 읽어 경보를 판정한다.
+임계값은 `config/plane-watchdog.yml`, 결과는 대시보드 "수집 경보" 패널·`GET /api/v1/plane-alerts`·로그·`/metrics`로 낸다.
+외부 발송은 일반 webhook 하나를 기본 꺼짐으로 둔다. location 정지 때 daemon·code-server 스레드 상태(py-spy가 있으면 Python
+스택)를 파일로 남긴다. 자세히는 [plane-watchdog.md](plane-watchdog.md).
+
+### 근거
+
+- Dagster sensor로 만들면 감시 대상이 멈출 때 감시도 멈춘다. Manager backend는 plane과 독립이고 이미 root로 Docker·`/proc`에
+  닿으며 백그라운드 루프(metrics collector)를 갖고 있다 — 새 프로세스·timer를 더하지 않는다.
+- storage 접근은 백업 primitive와 같은 경로(local socket, `POSTGRES_USER`)라 새 비밀·role이 없다. 공용 PG가 loopback 전용이라
+  각 호스트가 자기 plane만 본다.
+
+### 결과(긍정)
+
+- 감사의 세 사건(특보 100% 실패, weather location 정지, PinVi launch·sensor 연속 실패)이 실물 fixture로 결박된 시간 안에 울린다.
+- fd를 프로세스별로 지표화해(`ktdm_dagster_container_open_fds` 등) 누수를 Prometheus에서 추적한다.
+
+### 결과(부정)·잃는 것
+
+- 외부로 아무도 깨우지 않는다 — 소유자가 발송 채널을 정하기 전에는 화면·로그를 봐야 안다.
+- 모든 instigator를 사람이 끈 location은 lookback(24시간) 동안 정지 경보가 날 수 있다(DB status를 믿지 않기 때문).
+- odroid처럼 CPU가 포화한 호스트에서는 기동 직후 질의가 수십 초 걸린다(statement_timeout 60초 안).
+- code-server 자동 재시작은 하지 않는다(제안 문구만). 넣으려면 C6c 경계와 함께 소유자 결정이 필요하다.
+
+### 후속
+
+- (open) 두 호스트 설치, py-spy 설치, 발송 채널 결정.
