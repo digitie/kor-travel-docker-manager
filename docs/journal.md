@@ -1,3 +1,12 @@
+## 2026-11-23 — `dagster-plane converge`가 Concierge prebuilt 설정에 막힌다 → 재구축과 같은 pinned scope
+
+- #631 설치(`1ec54139`, rebind·`pin verify` 0) 뒤 `ktdctl dagster-plane converge --dry-run`이 `capture_transaction_unlocked`에서
+  `Concierge UI must keep the canonical production command`로 거부됐다. root `.env`의 `KOR_TRAVEL_CONCIERGE_UI_START_MODE=prebuilt`
+  (02:58, activate-concierge 전용 시작 명령)이면 전체 문서의 raw UI command가 기대(prebuilt 명령)와 다를 수밖에 없다.
+  같은 env에서 pinned 재구축(rot28, 04:23)은 scope를 좁혀 이 검사를 지났다.
+- plane converge는 재구축의 plane 조각이므로 같은 pinned scope(plane·storage one-shot·공용 instance가 드는 폐포)로 render를
+  잡는다. plane이 닿지 않는 Concierge 계약은 이 명령의 판정에서 빠진다. 전체 문서 검사는 `ensure`·activate-concierge가 계속 한다.
+
 ## 2026-11-23 — 후속 ①·④·⑤: job_ticks 정리 인덱스, unfreeze HTTP 500, Valkey 로그
 
 - **① Dagster `job_ticks` 정리 비용**: daemon은 tick마다 보존 일수별 DELETE를 부르고(sensor 7·14·30일 셋), Dagster의

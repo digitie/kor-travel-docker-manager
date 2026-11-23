@@ -74,6 +74,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         inspected=[],
         rotation_pending=False,
         env_overrides={},
+        captures=[],
     )
 
     @contextmanager
@@ -156,7 +157,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     service = ComposeService()
     transaction = SimpleNamespace(resolved=resolved)
     for name, replacement in {
-        "capture_transaction_unlocked": lambda **_kwargs: (transaction, None),
+        "capture_transaction_unlocked": lambda **kwargs: (state.captures.append(kwargs), (transaction, None))[1],
         "_read_shared_workspace_locations": lambda _source, **_kwargs: (),
         "_inspect_plane_container": plane_container,
         "_inspect_image_reference_id": lambda _reference, *, label: _IMAGE_ID,
@@ -186,6 +187,18 @@ def test_a_stale_plane_recreates_only_the_plane_services_under_the_lock(
     others = set(harness.resolved["services"]) - set(harness.plane.services)
     assert others and not others & set(calls[-1][0])
     assert all(held for _name, held in harness.state.inspected)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_converge_captures_the_rebuilds_pinned_scope(harness: SimpleNamespace, dry_run: bool) -> None:
+    """plane converge는 재구축과 같은 서비스 폐포로 render를 잡는다 — plane이 닿지 않는 서비스(Concierge UI의
+    prebuilt 시작 명령 등)의 계약이 이 명령을 막지 않는다(2026-11-23 n150: 전체 문서 검사가 늘 거부했다)."""
+
+    harness.service.converge_shared_dagster_plane(dry_run=dry_run)
+
+    assert harness.state.captures and all(
+        capture.get("pinned_runtime_scope") is True for capture in harness.state.captures
+    )
 
 
 def test_a_missing_plane_image_is_built_explicitly(

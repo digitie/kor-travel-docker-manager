@@ -5938,8 +5938,13 @@ class ComposeService:
         with _pinned_runtime_rebuild_environment_lock(
             prewrite_admission=no_pending_rotation
         ) as environment_snapshot:
+            # 재구축과 같은 서비스 폐포(pinned scope)로 frozen render를 잡는다 — plane·그 storage one-shot·공용
+            # instance가 들고, plane이 닿지 않는 서비스(Concierge UI 등)의 계약은 이 명령의 판정에 들지 않는다.
+            # 전체 문서로 잡으면 root `.env`의 `KOR_TRAVEL_CONCIERGE_UI_START_MODE=prebuilt`(activate-concierge 전용
+            # 시작 명령)만으로 raw UI command 검사에 걸려 plane converge가 늘 거부됐다(2026-11-23 n150 실측).
             transaction, _ = self.capture_transaction_unlocked(
                 environment_snapshot=environment_snapshot,
+                pinned_runtime_scope=True,
             )
             plane, services, locations = self._frozen_shared_plane(transaction)
             self._require_plane_location_owners_fenced(locations, installed_location_owners())
