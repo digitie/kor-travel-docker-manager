@@ -308,7 +308,7 @@ schema·package 의존성·producer 정상 build wrapper는 변경하지 않는�
     ktdctl service-release apply-core-candidate transport \
       --source-clone <root 소유 canonical merged M clone> --source-sha <M> \
       --build-receipt <정상 build receipt> --build-sha256 <승인 SHA256> \
-      --receipt <별도 runtime prebuilt-v1 receipt> --sha256 <승인 SHA256> \
+      --receipt <별도 runtime receipt> --sha256 <승인 SHA256> \
       --dry-run
 
 실제 변경은 같은 입력에서 `--confirm`으로 선택한다. build receipt의
@@ -336,7 +336,7 @@ current 발행 직전에도 같은 기준을 재확인한다. 기존 image 기�
 live 값을 client 승인으로 쓰지 않는다. 기존 nonrevision live ENV는 그대로 보존하며
 runtime override로 후보 baked 변경을 숨길 수 없다. producer·receipt schema는 바꾸지 않는다.
 
-현재 Transport의 `/opt/dagster/state`는 collector checkpoint volume과 별개인
+v1에서 Transport의 `/opt/dagster/state`는 collector checkpoint volume과 별개인
 CS writable layer다. 따라서 기존 mount 보존만으로 local artifact/compute log가
 새 CS에 전달되었다고 판단하지 않는다. 한 G와 같은 기존 project flock 아래에서:
 
@@ -370,6 +370,102 @@ public metadata나 Git에 넣지 않는다.
 이 구현의 Linux 단위 검증은 fake Docker/GraphQL 경계 및 실제 파일/tar/FD/signal을
 사용한다. 실제 Docker daemon의 새 이미지/no-start/state 인계와 운영 적용은 별도
 두 소스 리뷰·정확 CI·병합·trusted SDK 설치 및 최종 이미지 tuple gate 이후다.
+
+
+### Transport Dagster 영속 state volume
+
+영속 경로에서는 같은 CLI와 normal build receipt v1을 사용한다. runtime receipt의
+`version`을 2로 올리고 기존 `release_sha`, `images`, `schema_revisions`,
+`instigators` 필드는 유지한다. `state`에는 현재 CS의 전체 CID와 다음 volume 증거를 넣는다.
+
+```json
+{
+  "source_container": "<현재 CS의 64자리 CID>",
+  "volume": {
+    "name": "kor-travel-transport-dagster-state",
+    "driver": "local",
+    "scope": "local",
+    "mountpoint": "/var/lib/docker/volumes/kor-travel-transport-dagster-state/_data",
+    "createdAt": "<Docker volume inspect의 CreatedAt 원문>",
+    "generation": "<32자리 소문자 hex>"
+  }
+}
+```
+
+`mountpoint`에는 Docker volume inspect의 실제 `Mountpoint`를 사용한다.
+Manager 실행 호스트의 로컬 Unix Docker(`/var/run/docker.sock`)와 해당 경로를 읽을 수 있는
+root가 필요하다.
+Docker local driver 옵션은 비어 있어야 한다. Compose에는 OS에서 미리 준비한 아래
+external volume을 선언하고 해당 CS 하나에 다음 mount를 둔다.
+
+```yaml
+services:
+  dagster-code-server:
+    volumes:
+      - type: volume
+        source: dagster-state
+        target: /opt/dagster/state
+        volume:
+          nocopy: true
+volumes:
+  dagster-state:
+    name: kor-travel-transport-dagster-state
+    external: true
+```
+
+Docker가 관측한 하나의 쓰기 가능한 전체 volume mount와 `NoCopy: true`를 요구한다.
+부모·자식 mount, volume subpath 및 같은 volume의 별도 컨테이너 참조나 쓰기 가능한
+bind 별칭은 실패한다. 공유 Dagster 설정 bind와 collector checkpoint volume은
+기존 mount 보존 검사에 포함된다.
+
+#### 첫 전환
+
+1. 운영자가 같은 프로젝트의 배포·수동 실행·정리 작업을 막고 기존 core 절차대로
+   Transport 스케줄·센서를 일시 정지한 뒤 작업을 비운다. 이전 CS는 그대로 실행 중이어야
+   한다. 해당 CID에서 v1의 전체 fingerprint/manifest와 고정 경로 archive를 확보한다.
+   기존 `transport_core_state.archive_semantic`으로 archive의 UID/GID/mode/content를
+   대조하고 복구용 private 0600 사본을 보존한다.
+2. 사전 준비한 빈 local named volume을 신뢰한 임시 helper에 `nocopy`로 연결해 전체
+   state 트리를 한 번 복사한다. archive와 복사본의 전체 manifest를 비교하고 root와 파일의
+   UID/GID/mode를 보존한다. 비교가 끝난 뒤에만 volume root에 새 세대의
+   `.ktdm-state-generation` 파일을 생성한다. 내용은 32자리 소문자 hex와 마지막 줄바꿈
+   하나이고 권한은 root 소유 `0444`다. helper를 제거해 정지 컨테이너의 참조도 해제한다.
+3. v2 `state.seed`에 이전 CS에서 얻은 v1의 `fingerprint`와 `manifest`를 그대로 넣고
+   v2 receipt의 SHA256을 기존 `--sha256`으로 승인한다. Compose를 반영하고 위 CLI를
+   `--dry-run`으로 확인한 뒤 같은 입력을 `--confirm`으로 실행한다. Manager는 기존 G와
+   project lease 아래에서 미마운트 이전 CID의 전체 fingerprint를 재검사하고, marker를
+   제외한 volume의 전체 파일과 metadata를 v1 의미 표현과 비교한다. 그 뒤에만 미시작 CS를
+   생성할 수 있다. `state_handoff=verified_seed`가 이 경로를 표시한다.
+4. 생성된 CID의 정확한 mount와 같은 volume/세대를 시작 전에 확인한다. 시작 뒤에는
+   새 CID 내부에서 읽은 파일시스템 identity, schema, health, drain, 기존 current 발행
+   조건을 재확인한다. 기존 운영 절차대로 원래 실행 상태였던 instigator를 복원한다.
+
+전환 전 증거가 없거나 어긋나면 이전 CS를 교체하기 전에 실패한다. 전환에 실패하면 기존
+current와 준비한 volume을 유지한다. 이미 이전 CS를 교체한 뒤라면 private archive와
+volume을 함께 보존하고 실제 CID와 이전 이미지 상태를 확인한 뒤 운영자가 복구를 결정한다.
+Transport core 후보 경로에는 자동 rollback이 없다. 영속 전환 뒤 과거 v1 경로로 바로
+돌리면 state 경로가 어긋나므로, 이전 이미지를 복구하는 경우에도 같은 volume을 유지한다.
+
+#### 이후 교체와 다른 프로젝트 채택
+
+이후 v2 receipt에서는 `state.seed`를 생략하고 직전 CS CID와 같은 volume 세대를 승인한다.
+기존 CID가 정확한 volume을 장착한 경우에만 `state_handoff=persistent_volume`이 성립한다.
+이전·미시작·시작 후 CID의 mount, Docker identity, 세대 marker와 payload 존재를 검사한다.
+일반 교체에서는 state archive, recursive fingerprint, old state 복원을 건너뛰므로 첫 seed
+이후 Dagster가 쓴 파일이 새 CS에서도 그대로 사용된다. payload 확인은 `artifacts` 또는
+`compute_logs`의 직계 항목 존재만 확인한다. 설치한 marker 및 보관할 payload가 유지되도록
+정리 정책을 운영한다.
+
+다른 프로젝트의 채택은 Manager의 `persistent_dagster_state._VOLUME_POLICIES`에 검토된
+target·code-server 역할·고정 Docker volume 이름·경로를 추가한다. state root 소유자가
+root가 아닌 역할은 해당 UID도 정책에 지정한 뒤 해당 프로젝트의 후보
+경로에서 공통 proof 검사를 호출하는 방식으로 한다. 기존 프로젝트 잠금 및 schedule/run
+quiescence, 해당 역할의 이전/새 CID 확인, current 발행 전 검사에 연결하고 legacy archive
+분기를 유지한다. 첫 전환 검증, 일반 교체, 잘못된 별칭과 rollback 정책을 해당 프로젝트
+계약에 맞춰 검증한다. 현재 허용 목록에는 Transport code server만 있다. 별도
+retention 실행기는 같은 G → project lease 순서를 사용하고, volume을 확인한 CS의
+고정 CID를 사용한다. 전환 창에는 별도 retention 작업도 pause/drain하고 marker를
+정리 대상에서 제외한다.
 
 
 ## Pinvi web 단독 후보

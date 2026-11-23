@@ -25,6 +25,7 @@ from uuid import uuid4
 import docker
 
 from kor_travel_docker_manager import service_release_cli as entry
+from kor_travel_docker_manager.services import persistent_dagster_state as persistent
 from kor_travel_docker_manager.services import runtime_pin_registry as pin_registry
 from kor_travel_docker_manager.services import service_release as release
 from kor_travel_docker_manager.services import service_release_candidate as candidate
@@ -51,6 +52,7 @@ from kor_travel_docker_manager.services.service_release import ServiceReleaseErr
 
 RUNTIME = {"backend", "frontend", "dagster-code-server"}
 LOCATION = "kor-travel-transport"
+_STATE_VOLUME = persistent.policy_for("transport", "dagster-code-server")
 _ACTIVE = ["NOT_STARTED", "QUEUED", "STARTING", "STARTED", "CANCELING"]
 _SCHEMA_PROBE = r"""
 import asyncio,json,os
@@ -256,7 +258,7 @@ def _receipts(normal: dict, runtime: dict, sha: str, tree: str, heads: list[str]
             raise ValueError
         if (
             type(runtime["version"]) is not int
-            or runtime["version"] != 1
+            or runtime["version"] not in {1, 2}
             or runtime["release_sha"] != sha
             or set(runtime["images"]) != RUNTIME
             or runtime["schema_revisions"] != heads
@@ -273,18 +275,34 @@ def _receipts(normal: dict, runtime: dict, sha: str, tree: str, heads: list[str]
             raise ValueError
         for image in runtime["images"].values():
             release._image_id(image)
-        fingerprint = runtime["state"]["fingerprint"]
-        state.validate_fingerprint(fingerprint)
-        if (
-            not re.fullmatch(r"[0-9a-f]{64}", runtime["state"]["source_container"])
-            or state.state_manifest(fingerprint) != runtime["state"]["manifest"]
-        ):
+        proof = runtime["state"]
+        if not re.fullmatch(r"[0-9a-f]{64}", proof["source_container"]):
             raise ValueError
+        if runtime["version"] == 1:
+            _state_fingerprint_proof(proof)
+        else:
+            if set(proof) - {"source_container", "volume", "seed"}:
+                raise ValueError
+            persistent.validate_volume_proof(_STATE_VOLUME, proof["volume"])
+            if "seed" in proof:
+                seed = proof["seed"]
+                if set(seed) != {"fingerprint", "manifest"}:
+                    raise ValueError
+                _state_fingerprint_proof(seed)
+                if persistent.GENERATION_FILE in seed["manifest"]:
+                    raise ValueError
         _instigators(runtime["instigators"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ServiceReleaseError(
-            "normal build와 runtime-v1 receipt projection이 다릅니다"
+            "normal build와 runtime receipt projection이 다릅니다"
         ) from exc
+
+
+def _state_fingerprint_proof(proof: dict) -> None:
+    fingerprint = proof["fingerprint"]
+    state.validate_fingerprint(fingerprint)
+    if state.state_manifest(fingerprint) != proof["manifest"]:
+        raise ValueError
 
 
 def _images(client: Any, normal: dict, runtime: dict, sha: str, tree: str, url: str) -> dict:
@@ -412,9 +430,15 @@ def _graphql(query: str, records: list[dict], config: dict) -> dict:
     return payload["data"]
 
 
-def _probe(cid: str, script: str, lease_fd: int, *, timeout: int = 60) -> Any:
+def _docker_args(docker_host: str | None) -> list[str]:
+    return ["docker", "--host", docker_host] if docker_host is not None else ["docker"]
+
+
+def _probe(
+    cid: str, script: str, lease_fd: int, *, timeout: int = 60, docker_host: str | None = None
+) -> Any:
     completed, interrupted = frozen._run_mutation(
-        ["docker", "exec", cid, "python", "-I", "-c", script],
+        [*_docker_args(docker_host), "exec", cid, "python", "-I", "-c", script],
         additional_fds=(lease_fd,),
         capture_output=True,
         text=True,
@@ -428,7 +452,7 @@ def _probe(cid: str, script: str, lease_fd: int, *, timeout: int = 60) -> Any:
 
 
 def _quiet(runtime: dict, cid: str, records: list[dict], config: dict, lease_fd: int, *,
-           location: str = LOCATION) -> None:
+           location: str = LOCATION, docker_host: str | None = None) -> None:
     repos = _graphql(
         "{repositoriesOrError{__typename ... on RepositoryConnection{nodes{name location{name} schedules{name scheduleState{status}} sensors{name sensorState{status}}}}}}",
         records,
@@ -476,18 +500,20 @@ def _quiet(runtime: dict, cid: str, records: list[dict], config: dict, lease_fd:
             or (origin or tags[0]) == location
         ):
             raise ServiceReleaseError("Transport active run 또는 불명확한 run이 있습니다")
-    if _probe(cid, _WORKER_PROBE, lease_fd) != []:
+    probe_options = {} if docker_host is None else {"docker_host": docker_host}
+    if _probe(cid, _WORKER_PROBE, lease_fd, **probe_options) != []:
         raise ServiceReleaseError("Transport worker가 실행 중입니다")
 
 
-def _fingerprint(cid: str, lease_fd: int) -> dict:
+def _fingerprint(cid: str, lease_fd: int, *, docker_host: str | None = None) -> dict:
     script = (
         "import json\nfrom pathlib import Path\n"
         + inspect.getsource(state.scan_state)
         + "\nprint(json.dumps(scan_state(Path('/opt/dagster/state'))))"
     )
     # 파일 내용과 metadata 전체 순회는 일반 probe와 별도 예산을 쓴다.
-    return _probe(cid, script, lease_fd, timeout=180)
+    probe_options = {} if docker_host is None else {"docker_host": docker_host}
+    return _probe(cid, script, lease_fd, timeout=180, **probe_options)
 
 
 def _selected(records: list[dict], project: str, runtime: set[str]) -> dict:
@@ -719,7 +745,15 @@ def _apply_transport_core_candidate(
         runtime = _receipt(receipt_path, receipt_sha256)
         _receipts(normal, runtime, source_sha, tree, heads)
         plan, manifests = entry._compose_plan(service, group, root=root, config=config)
-        client = (client_factory or (lambda: docker.from_env(timeout=10)))()
+        if client_factory is not None:
+            client = client_factory()
+        elif runtime["version"] == 2:
+            try:
+                client = docker.DockerClient(base_url=persistent.LOCAL_DOCKER_HOST, timeout=10)
+            except docker.errors.DockerException:
+                raise ServiceReleaseError("Transport state 검증에 필요한 로컬 Docker에 연결할 수 없습니다") from None
+        else:
+            client = docker.from_env(timeout=10)
         try:
             return _apply(
                 plan,
@@ -778,6 +812,10 @@ def _apply(
     public_inputs_unchanged = _preserve_baked_public_inputs(
         client, selected["frontend"]["Image"], runtime["images"]["frontend"], normal
     )
+    proof = runtime["state"]
+    volume = proof["volume"] if runtime["version"] == 2 else None
+    seed = proof.get("seed") if volume is not None else None
+    docker_host = persistent.LOCAL_DOCKER_HOST if volume is not None else None
     old_ids = {
         k: (v["Id"], v["Image"], v["State"]["StartedAt"], v.get("RestartCount"))
         for k, v in selected.items()
@@ -804,7 +842,7 @@ def _apply(
         bindings.append(bind)
         environments[role] = unchanged
     rendered = candidate._render(
-        [*plan["argv"], "config", "--format", "json"],
+        [*_docker_args(docker_host), *plan["argv"][1:], "config", "--format", "json"],
         cwd=cwd,
         env=frozen._environment(),
         text=True,
@@ -824,13 +862,23 @@ def _apply(
             ):
                 raise ServiceReleaseError("rendered current image identity가 다릅니다")
             materialized["services"][name]["image"] = image["id"]
+    persistent_mount = (
+        persistent.volume_declaration(_STATE_VOLUME, materialized, project, volume["mountpoint"])
+        if volume is not None
+        else None
+    )
     for role in RUNTIME:
+        definition = materialized["services"][role]
+        protecting_volume = persistent_mount is not None and role == "dagster-code-server"
+        if protecting_volume and seed is not None:
+            definition = {
+                **definition,
+                "volumes": [mount for mount in definition["volumes"] if mount is not persistent_mount],
+            }
         _mount_admission(
-            materialized["services"][role],
-            materialized,
-            selected[role],
-            client.images.get(runtime["images"][role]).attrs,
-            project,
+            definition, materialized, selected[role],
+            client.images.get(runtime["images"][role]).attrs, project,
+            state_path=None if protecting_volume and seed is None else state.STATE_PATH,
         )
         materialized["services"][role]["image"] = runtime["images"][role]
     materialized["services"]["migrate"]["image"] = runtime["images"]["backend"]
@@ -897,6 +945,20 @@ def _apply(
         "result": "failed",
     }
 
+    volume_inode = None
+
+    def verify_volume(records, cs, *, running=False):
+        nonlocal volume_inode
+        observed = persistent.verify_volume(_STATE_VOLUME, client, volume, records, cs)
+        if volume_inode is None:
+            volume_inode = observed
+        if observed != volume_inode or (
+            running
+            and _probe(cs["Id"], _STATE_VOLUME.filesystem_probe(), lease_fd, docker_host=docker_host)
+            != observed
+        ):
+            raise ServiceReleaseError("Transport state volume과 CS filesystem identity가 다릅니다")
+
     def common():
         public_inputs_unchanged()
         state.check_lease(lease_fd, lease_path)
@@ -913,6 +975,7 @@ def _apply(
             raise ServiceReleaseError("비선택 runtime identity 또는 설정이 변경되었습니다")
         for check in environments.values():
             check(records)
+        return records
 
     def admission():
         common()
@@ -926,33 +989,50 @@ def _apply(
             tree,
             runtime["schema_revisions"],
         )
-        current = _selected(candidate._inventory(client), project, RUNTIME)
+        records = candidate._inventory(client)
+        current = _selected(records, project, RUNTIME)
         identities = {
             k: (v["Id"], v["Image"], v["State"]["StartedAt"], v.get("RestartCount"))
             for k, v in current.items()
         }
         if identities != old_ids:
             raise ServiceReleaseError("교체 전 선택 runtime identity가 변경되었습니다")
-        _quiet(runtime, old_cs, candidate._inventory(client), config, lease_fd)
-        if _probe(current["backend"]["Id"], _SCHEMA_PROBE, lease_fd) != runtime["schema_revisions"]:
+        _quiet(runtime, old_cs, candidate._inventory(client), config, lease_fd, docker_host=docker_host)
+        if _probe(current["backend"]["Id"], _SCHEMA_PROBE, lease_fd, docker_host=docker_host) != runtime["schema_revisions"]:
             raise ServiceReleaseError("live schema와 승인 source head가 다릅니다")
-        if _fingerprint(old_cs, lease_fd) != runtime["state"]["fingerprint"]:
-            raise ServiceReleaseError("이전 CS state가 snapshot 뒤 변경되었습니다")
-        _quiet(runtime, old_cs, candidate._inventory(client), config, lease_fd)
+        if seed is not None:
+            verify_volume(records, None)
+        if volume is None or seed is not None:
+            expected = (seed if seed is not None else proof)["fingerprint"]
+            if _fingerprint(old_cs, lease_fd, docker_host=docker_host) != expected:
+                raise ServiceReleaseError("이전 CS state가 snapshot 뒤 변경되었습니다")
+        if seed is not None:
+            persistent.verify_seed(volume, seed)
+        records = candidate._inventory(client)
+        _quiet(runtime, old_cs, records, config, lease_fd, docker_host=docker_host)
+        if volume is not None:
+            prior_cs = _selected(records, project, RUNTIME)[_STATE_VOLUME.role]
+            if prior_cs["Id"] != old_cs:
+                raise ServiceReleaseError("volume 검사 전 이전 Transport CS CID가 변경되었습니다")
+            verify_volume(records, prior_cs if seed is None else None, running=seed is None)
 
     admission()
+    if volume is not None:
+        result["state_handoff"] = "verified_seed" if seed is not None else "persistent_volume"
     if not execute:
         return {
             **result,
             "success": True,
             "result": "planned",
-            "state_handoff": "required_before_start",
+            "state_handoff": result.get("state_handoff", "required_before_start"),
         }
-    stage = root / ("transport-core-state-" + uuid4().hex)
-    stage.mkdir(mode=0o700)
-    result["private_state_directory"] = str(stage)
+    stage = None
+    if volume is None:
+        stage = root / ("transport-core-state-" + uuid4().hex)
+        stage.mkdir(mode=0o700)
+        result["private_state_directory"] = str(stage)
     command = [
-        "docker",
+        *_docker_args(docker_host),
         "compose",
         "--project-name",
         project,
@@ -987,15 +1067,12 @@ def _apply(
             raise ServiceReleaseError("선택 core Compose 단계가 실패하거나 중단되었습니다")
 
     try:
-        _state_child(
-            "snapshot",
-            old_cs,
-            selected["dagster-code-server"]["Image"],
-            stage,
-            runtime["state"]["fingerprint"],
-            lease_fd,
-        )
-        admission()
+        if stage is not None:
+            _state_child(
+                "snapshot", old_cs, selected["dagster-code-server"]["Image"],
+                stage, proof["fingerprint"], lease_fd,
+            )
+            admission()
         result["phase"] = "create"
         compose(
             [
@@ -1009,29 +1086,33 @@ def _apply(
                 *sorted(RUNTIME),
             ]
         )
-        common()
-        created = _selected(candidate._inventory(client), project, RUNTIME)
+        created_records = common()
+        created = _selected(created_records, project, RUNTIME)
         for role, record in created.items():
+            mounts = _mounts(record)
+            if seed is not None and role == "dagster-code-server":
+                mounts = [m for m in mounts if m["Destination"] != state.STATE_PATH]
             if (
-                record["Image"] != runtime["images"][role]
+                record["Id"] == selected[role]["Id"]
+                or record["Image"] != runtime["images"][role]
                 or record["State"].get("Status") != "created"
                 or record["State"].get("Running") is not False
-                or _mounts(record) != _mounts(selected[role])
+                or mounts != _mounts(selected[role])
             ):
                 raise ServiceReleaseError(
                     "선택 runtime의 미시작/이미지/mount 보존 검사가 실패했습니다"
                 )
         new_cs = created["dagster-code-server"]["Id"]
-        result["phase"] = "restore_before_start"
-        _state_child(
-            "restore",
-            new_cs,
-            runtime["images"]["dagster-code-server"],
-            stage,
-            runtime["state"]["fingerprint"],
-            lease_fd,
-        )
-        common()
+        if stage is not None:
+            result["phase"] = "restore_before_start"
+            _state_child(
+                "restore", new_cs, runtime["images"]["dagster-code-server"],
+                stage, proof["fingerprint"], lease_fd,
+            )
+            common()
+        else:
+            result["phase"] = "verify_volume_before_start"
+            verify_volume(created_records, created["dagster-code-server"])
         result["phase"] = "start"
         # start는 이미 만든 컨테이너만 시작한다. up 재호출로 state를 다시 지우지 않는다.
         compose(["start", *sorted(RUNTIME)])
@@ -1043,10 +1124,10 @@ def _apply(
             time.sleep(1)
 
         def healthy():
-            common()
-            actual = _selected(candidate._inventory(client), project, RUNTIME)
+            records = common()
+            actual = _selected(records, project, RUNTIME)
             if any(
-                actual[k]["Id"] != created[k]["Id"] or _mounts(actual[k]) != _mounts(selected[k])
+                actual[k]["Id"] != created[k]["Id"] or _mounts(actual[k]) != _mounts(created[k])
                 for k in RUNTIME
             ):
                 raise ServiceReleaseError("시작 뒤 선택 CID 또는 mount가 변경되었습니다")
@@ -1054,14 +1135,17 @@ def _apply(
             if any(v.get("result") != "healthy" for v in verified.values()):
                 raise ServiceReleaseError("선택 core가 healthy current 후보가 아닙니다")
             if (
-                _probe(actual["backend"]["Id"], _SCHEMA_PROBE, lease_fd)
+                _probe(actual["backend"]["Id"], _SCHEMA_PROBE, lease_fd, docker_host=docker_host)
                 != runtime["schema_revisions"]
             ):
                 raise ServiceReleaseError("시작 뒤 schema가 변경되었습니다")
-            actual_state = _fingerprint(new_cs, lease_fd)
-            if state.semantic(actual_state) != state.semantic(runtime["state"]["fingerprint"]):
-                raise ServiceReleaseError("시작 뒤 state 의미가 보존되지 않았습니다")
-            _quiet(runtime, new_cs, candidate._inventory(client), config, lease_fd)
+            if volume is None:
+                actual_state = _fingerprint(new_cs, lease_fd)
+                if state.semantic(actual_state) != state.semantic(proof["fingerprint"]):
+                    raise ServiceReleaseError("시작 뒤 state 의미가 보존되지 않았습니다")
+            else:
+                verify_volume(records, actual["dagster-code-server"], running=True)
+            _quiet(runtime, new_cs, candidate._inventory(client), config, lease_fd, docker_host=docker_host)
             _images(client, normal, runtime, sha, tree, url)
 
         result["phase"] = "postproof"
