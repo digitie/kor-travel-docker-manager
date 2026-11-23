@@ -51,10 +51,43 @@ def _postgres_url(postgres: dict) -> str:
     return value
 
 
-def ensure_tick_lookup_index(postgres_url: str) -> None:
-    """최신 tick 조회의 OR 조건 뒤 전체 정렬을 줄이는 공용 인덱스를 준비한다.
+#: Manager가 소유하는 `job_ticks` 인덱스(이름, btree 열). 기대 정의는 여기서 파생한다.
+#: - 최신 tick 조회: `selector_id = … OR (selector_id IS NULL AND job_origin_id = …)` 뒤
+#:   timestamp 내림차순·소수 limit — BitmapOr 결과 전체 정렬을 피한다(2026-10-14).
+#: - tick 보존 정리: daemon이 instigator tick마다 보존 기간(일수)별로 부르는
+#:   `DELETE … WHERE timestamp < … AND status IN (…) AND (selector_id = … OR …)`. Dagster의
+#:   `(selector_id, timestamp)`만으로는 더 긴 기간이 남긴 다른 status의 행까지 매번 읽는다
+#:   (n150 2026-11-15~23: 69.6만 회·19,297초·shared read 78.8 GB). status를 가운데 두면 지울 행만 읽는다.
+TICK_INDEXES = (
+    ("ktdm_job_ticks_latest_timestamp", '"timestamp" DESC'),
+    ("ktdm_job_ticks_selector_status_timestamp", 'selector_id, status, "timestamp"'),
+)
 
-    CONCURRENTLY는 운영 쓰기를 막지 않으며, autocommit 연결에서만 실행한다.
+
+def _ensure_tick_index(connection, name: str, columns: str) -> None:
+    lookup = (
+        "SELECT indisvalid, indisready, pg_get_indexdef(indexrelid) "
+        f"FROM pg_index WHERE indexrelid = to_regclass('public.{name}')"
+    )
+    expected = f"CREATE INDEX {name} ON public.job_ticks USING btree ({columns})"
+    row = connection.exec_driver_sql(lookup).first()
+    if row is not None:
+        if row[2] != expected:
+            raise TickIndexError(f"tick 인덱스 이름 충돌({name}): 기존 정의를 확인하세요")
+        if row[0] and row[1]:
+            return
+        connection.exec_driver_sql(f"DROP INDEX CONCURRENTLY public.{name}")
+    connection.exec_driver_sql(f"CREATE INDEX CONCURRENTLY {name} ON public.job_ticks ({columns})")
+    row = connection.exec_driver_sql(lookup).first()
+    if row is None or not (row[0] and row[1]) or row[2] != expected:
+        raise TickIndexError(f"tick 인덱스 준비 미완료({name}): storage bootstrap을 재시도하세요")
+
+
+def ensure_tick_lookup_index(postgres_url: str) -> None:
+    """`TICK_INDEXES`를 차례로 준비한다.
+
+    CONCURRENTLY는 운영 쓰기를 막지 않으며, autocommit 연결에서만 실행한다. lock 대기는 5초다.
+    SQL 작업은 600초로 제한한다 — 디스크 대기가 큰 호스트에서 수십만 행 표의 첫 빌드가 120초를 넘을 수 있다.
     중단된 같은 정의의 invalid 인덱스는 재시도 때 복구한다. 이름만 같은 다른
     정의는 교체하지 않고 거부한다. Dagster 데이터와 기존 인덱스는 지우지 않는다.
     """
@@ -63,33 +96,12 @@ def ensure_tick_lookup_index(postgres_url: str) -> None:
     engine = create_engine(
         postgres_url, isolation_level="AUTOCOMMIT", connect_args={"connect_timeout": 5}
     )
-    lookup = (
-        "SELECT indisvalid, indisready, pg_get_indexdef(indexrelid) "
-        "FROM pg_index WHERE indexrelid = "
-        "to_regclass('public.ktdm_job_ticks_latest_timestamp')"
-    )
-    expected = ('CREATE INDEX ktdm_job_ticks_latest_timestamp '
-                'ON public.job_ticks USING btree ("timestamp" DESC)')
     try:
         with engine.connect() as connection:
             connection.exec_driver_sql("SET lock_timeout = '5s'")
-            connection.exec_driver_sql("SET statement_timeout = '120s'")
-            row = connection.exec_driver_sql(lookup).first()
-            if row is not None:
-                if row[2] != expected:
-                    raise TickIndexError("tick 인덱스 이름 충돌: 기존 정의를 확인하세요")
-                if row[0] and row[1]:
-                    return
-                connection.exec_driver_sql(
-                    "DROP INDEX CONCURRENTLY public.ktdm_job_ticks_latest_timestamp"
-                )
-            connection.exec_driver_sql(
-                'CREATE INDEX CONCURRENTLY ktdm_job_ticks_latest_timestamp '
-                'ON public.job_ticks ("timestamp" DESC)'
-            )
-            row = connection.exec_driver_sql(lookup).first()
-            if row is None or not (row[0] and row[1]) or row[2] != expected:
-                raise TickIndexError("tick 인덱스 준비 미완료: storage bootstrap을 재시도하세요")
+            connection.exec_driver_sql("SET statement_timeout = '600s'")
+            for name, columns in TICK_INDEXES:
+                _ensure_tick_index(connection, name, columns)
     finally:
         engine.dispose()
 
