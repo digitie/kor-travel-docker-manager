@@ -285,7 +285,13 @@ def test_canonical_pair_roots_include_support_bootstrap_and_shared_plane(monkeyp
     scope = module._pinned_runtime_compose_scope(candidate, {})
     assert set(module._PINNED_RUNTIME_ONESHOT_WRITERS) <= set(scope)
     assert set(module._PINNED_RUNTIME_EXTERNAL_PREREQUISITES) <= set(scope)
-    assert set(module.installed_shared_dagster_plane().services) <= set(scope)
+    plane = module.installed_shared_dagster_plane().services
+    assert set(plane) <= set(scope)
+    # `dagster-plane converge`도 이 폐포로 render를 잡는다 — plane이 `up` 전에 돌리는 one-shot(storage migrate)과
+    # R3 울타리가 보는 공용 instance가 들어야 한다.
+    oneshots = module._completed_oneshot_dependencies(candidate["services"], plane)
+    assert oneshots and set(oneshots) <= set(scope)
+    assert "kor-travel-shared-postgres" in scope
     assert "kor-travel-map-valkey" in scope
     assert all("weather" not in name for name in scope)
 
