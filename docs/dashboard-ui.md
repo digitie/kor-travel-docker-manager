@@ -10,7 +10,7 @@ P0·P7, 디자인 토큰과 룩앤필은 [`design-system.md`](design-system.md)�
 
 구현: `frontend/src/components/`, `frontend/src/lib/`
 
-현재 화면의 셸은 `@kor-travel/ui` 0.2.3 `AdminShell`이다. 1024px 이상은 좌측 rail(16rem,
+현재 화면의 셸은 `@kor-travel/ui` 0.2.5 `AdminShell`이다. 1024px 이상은 좌측 rail(16rem,
 접으면 4rem 아이콘)이고, 그 아래는 한 줄 상단 바의 메뉴 버튼으로 여는 좌측 drawer다. 상단 바에는
 "영역 - 페이지" 제목(`Docker Manager - 대시보드`, 문서 제목도 같다)만 두고 앱 설명 문구는 두지
 않는다. 페이지 설명은 같은 줄에 작게 말줄임으로, 동작은 오른쪽에 두며 좁은 폭에서는 아이콘 버튼만
@@ -20,7 +20,8 @@ P0·P7, 디자인 토큰과 룩앤필은 [`design-system.md`](design-system.md)�
 기존 값을 유지한다.
 
 버튼 상태 규칙(FS-7.8): base 층에는 요소 기본값과 키보드 포커스 outline 하나(2px, offset 2px,
-`--kt-focus`)만 둔다. 컴포넌트 클래스(`.ops-button` 등)는 hover·active에서 테두리 두께·그림자를
+`--kt-focus`)만 둔다. 입력·선택·여러 줄도 같은 outline 하나이며 앱 쪽에서 포커스 테두리 색·ring을 덧대지 않는다
+(`e2e/field-focus.spec.ts`). 컴포넌트 클래스(`.ops-button` 등)는 hover·active에서 테두리 두께·그림자를
 바꾸지 않고, 누름 이동은 공통 Button의 1px 하나만 쓴다. `e2e/admin-shell.spec.ts`가 1280·390px에서
 변형별 상태를 계산값으로 단언한다.
 
