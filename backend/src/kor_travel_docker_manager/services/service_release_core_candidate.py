@@ -509,11 +509,13 @@ def _fingerprint(cid: str, lease_fd: int, *, docker_host: str | None = None) -> 
     script = (
         "import json\nfrom pathlib import Path\n"
         + inspect.getsource(state.scan_state)
-        + "\nprint(json.dumps(scan_state(Path('/opt/dagster/state'))))"
+        + "\nprint(json.dumps(scan_state(Path('/opt/dagster/state')), separators=(',', ':')))"
     )
-    # 파일 내용과 metadata 전체 순회는 일반 probe와 별도 예산을 쓴다.
-    probe_options = {} if docker_host is None else {"docker_host": docker_host}
-    return _probe(cid, script, lease_fd, timeout=180, **probe_options)
+    # 첫 영속 seed는 운영의 기존 상태 트리 전체를 한 번 더 읽는다.
+    # 정기 영속 교체에는 이 probe가 호출되지 않는다.
+    if docker_host is not None:
+        return _probe(cid, script, lease_fd, timeout=900, docker_host=docker_host)
+    return _probe(cid, script, lease_fd, timeout=180)
 
 
 def _selected(records: list[dict], project: str, runtime: set[str]) -> dict:

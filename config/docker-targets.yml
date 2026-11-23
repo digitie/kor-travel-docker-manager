@@ -1286,3 +1286,10 @@ service_releases:
         env_file: .env
         runtime_services: [fuel-api-gateway, fuel-web]
         oneshot_services: []
+
+# 코드 서버에서 실행하는 프로젝트별 Dagster compute-log 보존 명령이다.
+dagster_compute_log_retention:
+  transport:
+    service: dagster-code-server
+    python: /opt/venv/bin/python
+    module: app.dagster.compute_log_retention

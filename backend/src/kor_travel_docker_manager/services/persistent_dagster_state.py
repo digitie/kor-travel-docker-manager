@@ -124,8 +124,7 @@ def volume_declaration(policy: VolumePolicy, model: dict, project: str, mountpoi
     return mount
 
 
-def verify_volume(policy: VolumePolicy, client: Any, proof: dict, records: list[dict], cs: dict | None) -> list[int]:
-    """Docker identity, 유일한 참조, 고정 marker 및 비어 있지 않은 payload를 읽는다."""
+def _local_volume_identity(policy: VolumePolicy, client: Any) -> dict:
     if client.api.base_url != "http+docker://localhost":
         raise ServiceReleaseError("Dagster state volume 검증은 로컬 Unix Docker만 지원합니다")
     try:
@@ -139,8 +138,45 @@ def verify_volume(policy: VolumePolicy, client: Any, proof: dict, records: list[
             ("mountpoint", "Mountpoint"), ("createdAt", "CreatedAt"),
         )
     }
-    if identity != {k: v for k, v in proof.items() if k != "generation"} or volume.get("Options") not in ({}, None):
-        raise ServiceReleaseError("Dagster state volume identity 또는 local driver 설정이 다릅니다")
+    if volume.get("Options") not in ({}, None):
+        raise ServiceReleaseError("Dagster state volume local driver 설정이 다릅니다")
+    return identity
+
+
+def _state_root(policy: VolumePolicy, root: Path) -> os.stat_result:
+    release._trusted_ancestors(root.parent)
+    info = root.lstat()
+    owner_uid = release._OWNER_UID if policy.state_owner_uid is None else policy.state_owner_uid
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner_uid or info.st_mode & 0o022:
+        raise ServiceReleaseError("Dagster state volume root 소유권·권한이 안전하지 않습니다")
+    return info
+
+
+def observe_volume_proof(policy: VolumePolicy, client: Any) -> dict:
+    """Read a registered volume's generation for maintenance or receipt preparation."""
+    proof = _local_volume_identity(policy, client)
+    validate_volume_proof(policy, proof | {"generation": "0" * 32})
+    mountpoint = Path(proof["mountpoint"])
+    try:
+        _state_root(policy, mountpoint)
+        marker = mountpoint / GENERATION_FILE
+        if marker.lstat().st_size != 33:
+            raise ServiceReleaseError("Dagster state volume generation marker 크기가 다릅니다")
+        generation = release._read_file(marker).decode("ascii")
+        if not generation.endswith("\n"):
+            raise ServiceReleaseError("Dagster state volume generation marker가 올바르지 않습니다")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ServiceReleaseError("Dagster state volume generation marker를 읽을 수 없습니다") from exc
+    proof["generation"] = generation[:-1]
+    validate_volume_proof(policy, proof)
+    return proof
+
+
+def verify_volume(policy: VolumePolicy, client: Any, proof: dict, records: list[dict], cs: dict | None) -> list[int]:
+    """Docker identity, 유일한 참조, 고정 marker 및 비어 있지 않은 payload를 읽는다."""
+    identity = _local_volume_identity(policy, client)
+    if identity != {k: v for k, v in proof.items() if k != "generation"}:
+        raise ServiceReleaseError("Dagster state volume identity가 다릅니다")
     mountpoint = identity["mountpoint"]
     expected_cid = cs["Id"] if cs is not None else None
     for record in records:
@@ -163,11 +199,7 @@ def verify_volume(policy: VolumePolicy, client: Any, proof: dict, records: list[
 
     root = Path(mountpoint)
     try:
-        release._trusted_ancestors(root.parent)
-        before = root.lstat()
-        owner_uid = release._OWNER_UID if policy.state_owner_uid is None else policy.state_owner_uid
-        if not stat.S_ISDIR(before.st_mode) or before.st_uid != owner_uid or before.st_mode & 0o022:
-            raise ServiceReleaseError("Dagster state volume root 소유권·권한이 안전하지 않습니다")
+        before = _state_root(policy, root)
         marker = root / GENERATION_FILE
         marker_stat = marker.lstat()
         if (

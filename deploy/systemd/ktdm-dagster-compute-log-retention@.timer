@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Kor Travel Dagster compute-log retention (%i)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
