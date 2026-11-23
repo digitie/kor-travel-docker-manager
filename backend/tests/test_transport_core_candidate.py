@@ -516,7 +516,7 @@ def volume_case(core_case, monkeypatch):
             "Type": "volume",
             "Source": VOLUME_POLICY.name,
             "Target": state.STATE_PATH,
-            "VolumeOptions": {"NoCopy": True},
+            "VolumeOptions": {"NoCopy": True, "DriverConfig": {}},
         }]
 
     def unexpected_archive(*args, **kwargs):

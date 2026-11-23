@@ -237,6 +237,7 @@ def _verify_cs_mount(policy: VolumePolicy, record: dict, mountpoint: str) -> Non
     if len(mounts) != 1 or len(configured) != 1:
         raise ServiceReleaseError("Dagster CS state mount가 없거나 경로가 겹칩니다")
     observed, intent = mounts[0], configured[0]
+    options = intent.get("VolumeOptions") or {}
     if (
         observed["Destination"] != policy.destination
         or observed.get("Type") != "volume"
@@ -248,8 +249,9 @@ def _verify_cs_mount(policy: VolumePolicy, record: dict, mountpoint: str) -> Non
         or intent.get("Type") != "volume"
         or intent.get("Source") != policy.name
         or intent.get("ReadOnly", False) is not False
-        or set(intent.get("VolumeOptions") or {}) != {"NoCopy"}
-        or intent["VolumeOptions"]["NoCopy"] is not True
+        or set(options) - {"NoCopy", "DriverConfig"}
+        or options.get("NoCopy") is not True
+        or options.get("DriverConfig") not in ({}, None)
         or any(_overlaps(path, policy.destination) for path in (host.get("Tmpfs") or {}))
     ):
         raise ServiceReleaseError("Dagster CS의 실제 state mount가 승인한 rw/nocopy volume과 다릅니다")

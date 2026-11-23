@@ -1,5 +1,5 @@
-from contextlib import nullcontext
 import json
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import pytest

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
 import json
 import re
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 
 import docker
