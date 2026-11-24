@@ -552,8 +552,8 @@ jinja2==3.1.6 \
     # via
     #   -c requirements.txt
     #   dagster
-kor-travel-common==0.1.0.dev0 \
-    --hash=sha256:3119d0fc3c8d4f713398efc3d1077e2986b1b031da6828fa07e96a37518a6f02
+kor-travel-common==0.1.0.dev2 \
+    --hash=sha256:aa65a95efcd6e541903f3094947fe38f0fe1f1d521c6fdfde275809f8ca3b5c0
     # via
     #   -c requirements.txt
     #   -r requirements.in

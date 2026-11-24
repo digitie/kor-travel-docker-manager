@@ -79,6 +79,7 @@ from kor_travel_docker_manager.services.capabilities import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
 )
 from kor_travel_docker_manager.services.compose_references import reference_compose_path
+from kor_travel_docker_manager.services.dagster_host_image import require_prebuilt_host_image
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRole,
     DatabaseRuntime,
@@ -5860,10 +5861,11 @@ class ComposeService:
     ) -> None:
         """plane 서비스만 frozen render로 다시 만든다 — 재구축과 `dagster-plane converge`가 같은 호출을 쓴다.
 
-        render의 이미지가 로컬에 없으면(설치로 plane 이미지 태그가 바뀐 경우) `--build`를 명시한다.
-        Manager는 명시 build가 아닌 명령에서 `build:` 절을 지워 보내므로(build_context_export.py)
-        implicit build에 기대면 Compose가 로컬 전용 태그를 pull하려다 실패한다. 이미지가 있으면
-        빌드하지 않는다.
+        **빌드하지 않는다(ADR-67).** 운영 박스는 이미지를 만들지 않는다 — 개발 장비(WSL)에서 빌드해 옮긴 이미지만 쓴다.
+        그래서 `run`·`up` 전에 render의 이미지 전부(plane과 아래 one-shot)가 이 호스트에 있고 빌드 스크립트의 내용
+        label·호스트 arch가 맞는지 본다(`dagster_host_image.require_prebuilt_host_image`) — 하나라도 아니면 아무것도
+        바꾸기 전에 거부한다. 예전에는 없으면 `--build`를 붙여 그 자리에서 빌드했다. `up`에는 `--no-build`를 싣는다
+        (Manager는 명시 build가 아닌 명령에서 `build:` 절을 지워 보내지만 — build_context_export.py — 의도를 argv에도 둔다).
 
         `--no-deps`는 compose가 plane 앞에 돌릴 one-shot(render의 `depends_on`에서 조건이
         `service_completed_successfully`인 직접 의존 — 오늘은 storage migrate)도 건너뛴다. 그러면 plane 이미지가
@@ -5874,31 +5876,55 @@ class ComposeService:
         """
 
         names = (plane.webserver,) if keep_daemon_stopped else plane.services
-        for oneshot in _completed_oneshot_dependencies(services, names):
-            run = ["run", "--rm", "--no-deps"]
-            if not self._rendered_image_present(services[oneshot], label=oneshot):
-                run.append("--build")
+        oneshots = _completed_oneshot_dependencies(services, names)
+        self._require_prebuilt_plane_images(services, (*oneshots, *names))
+        for oneshot in oneshots:
             self._run_pinned_runtime_rebuild_compose(
-                [*run, oneshot],
+                ["run", "--rm", "--no-deps", oneshot],
                 transaction=transaction,
             )
-        arguments = ["up", "-d", "--no-deps"]
-        if any(not self._rendered_image_present(services[name], label=name) for name in names):
-            arguments.append("--build")
         self._run_pinned_runtime_rebuild_compose(
-            [*arguments, *names],
+            ["up", "-d", "--no-deps", "--no-build", *names],
             transaction=transaction,
         )
 
-    def _rendered_image_present(self, render: Mapping[str, Any], *, label: str) -> bool:
-        image = render.get("image")
-        if not isinstance(image, str) or not image:
-            return False
-        try:
-            self._inspect_image_reference_id(image, label=label)
-        except DeploymentContractError:
-            return False
-        return True
+    def _require_prebuilt_plane_images(
+        self, services: Mapping[str, Any], names: Sequence[str]
+    ) -> dict[str, str]:
+        """`names`의 render 이미지가 전부 이 호스트에 받아 둔 host 이미지인가 — image 참조 → image ID. 아니면 거부한다."""
+
+        verified: dict[str, str] = {}
+        for name in names:
+            image = services[name].get("image")
+            if not isinstance(image, str) or not image:
+                raise DeploymentContractError(f"{name}: render has no image reference")
+            if image not in verified:
+                verified[image] = self._prebuilt_host_image_id(image)
+        return verified
+
+    @staticmethod
+    def _prebuilt_host_image_id(image: str) -> str:
+        return require_prebuilt_host_image(image)
+
+    def _plane_image_readiness(
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+    ) -> dict[str, str]:
+        """dry-run 보고용 — plane과 그 one-shot의 이미지마다 `ready` 또는 거부 사유(재생성하면 그 사유로 멈춘다)."""
+
+        names = (*_completed_oneshot_dependencies(services, plane.services), *plane.services)
+        readiness: dict[str, str] = {}
+        for name in names:
+            image = services[name].get("image")
+            key = image if isinstance(image, str) and image else name
+            if key in readiness:
+                continue
+            try:
+                self._require_prebuilt_plane_images(services, (name,))
+            except DeploymentContractError as exc:
+                readiness[key] = str(exc)
+            else:
+                readiness[key] = "ready"
+        return readiness
 
     @invalidates_status
     def converge_shared_dagster_plane(self, *, dry_run: bool) -> dict[str, Any]:
@@ -5922,7 +5948,9 @@ class ComposeService:
 
         ``dry_run``이면 같은 검사를 거쳐 무엇이 다른지(`would_recreate`·`current`·`current_not_healthy`)와 health(한 번
         관측, 기다리지 않음)를 돌려주고 아무것도 바꾸지 않는다. 보기만 하므로 종료 코드는 항상 0이다. 결과에는 늘
-        `health`와 `remaining_drift`(재생성하지 않았으면 `{}`)가 있다.
+        `health`와 `remaining_drift`(재생성하지 않았으면 `{}`)가 있다. dry-run 결과의 `images`는 재생성할 것일 때 쓸
+        이미지마다 `ready` 또는 거부 사유다 — 운영 박스는 빌드하지 않으므로(ADR-67) 옮긴 이미지가 맞게 들어왔는지
+        `--confirm` 전에 본다.
         """
 
         _require_pinned_runtime_rebuild_root()
@@ -5973,6 +6001,11 @@ class ComposeService:
                     "outcome": outcome if healthy or outcome == "would_recreate" else f"{outcome}_not_healthy",
                     "health": health,
                     "remaining_drift": remaining,
+                    # 재생성할 것이면 쓸 이미지가 이 호스트에 받아져 있는가(ADR-67 — 빌드하지 않는다). 아니면 `{}`.
+                    "images": (
+                        self._plane_image_readiness(plane, services)
+                        if outcome == "would_recreate" else {}
+                    ),
                 }
             converged = healthy and not any(remaining.values())
             outcome = "recreated" if recreated else "current"

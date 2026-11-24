@@ -2059,3 +2059,54 @@ concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째
 ### 후속
 
 - (open) 두 호스트 설치·timer 활성, 첫 실행 결과 기록. 수집 감시가 timer 실패를 보게 할지.
+
+## ADR-67: 운영 박스는 공용 Dagster host 이미지를 빌드하지 않는다 — WSL에서 빌드해 tar로 옮기고 plane 수렴은 받은 이미지만 쓴다
+
+- 상태: accepted — 소스 구현, 운영 설치 전(n150은 부모, odroid는 Codex)
+- 날짜: 2026-11-24
+- 결정자: 소유자(운영 박스 빌드 금지), 구현은 Claude
+
+### 컨텍스트
+
+`kor-travel-dagster-host:<내용 해시>`는 레지스트리 없이 호스트마다 있는 이미지다(ADR-58 결정 9). 설치로 태그가 바뀌면 plane
+수렴(pinned 재구축 안·`ktdctl dagster-plane converge`)이 `up`/`run`에 `--build`를 붙여 **운영 박스에서** 빌드했다. n150은 디스크
+대기가 큰 4코어 박스이고 빌드는 PyPI 접근·수 분의 CPU·IO를 쓴다 — 수집 실패 감사(2026-11-23)의 IO 정체 위에 빌드를 얹는다.
+소유자 결정(2026-11-24): 이미지·프런트 빌드는 Windows 개발 장비의 WSL에서만, 운영 박스는 완성된 이미지를 받기만 한다.
+
+### 결정
+
+1. 빌드는 `scripts/dagster_host_image.py build --platform linux/{amd64,arm64}`(개발 장비 WSL)가 한다 — build context 내용 해시가
+   compose 태그와 같아야 하고, 이미지에 내용 label `io.kor-travel-docker-manager.dagster-host-content=<태그>`를 붙이며, docker-archive
+   tar와 receipt(태그·platform·config digest·layer digest·tar sha256)를 쓴다. 설치된 release root(`/opt/kor-travel-docker-manager`)가
+   있는 호스트에서는 거부한다.
+2. 운반은 `... load --ssh <host> <tar>` — tar sha256을 receipt와 대조한 뒤 `ssh <host> docker load`, 받은 쪽의 platform·내용 label·
+   layer digest가 receipt와 같아야 성공이다. 컨테이너는 건드리지 않는다. 예전에 개발 장비 이미지를 `docker save | ssh docker load`로
+   옮긴 방식(journal-archive-02)을 검증과 함께 정식화한 것이다. ghcr push/pull은 쓰지 않는다(레지스트리 없음 — ADR-58 결정 9).
+3. plane 수렴은 빌드하지 않는다. `run`·`up` 전에 render의 이미지 전부(plane과 storage migrate one-shot)가 이 호스트에 있고 내용 label이
+   태그와 같고 arch가 Docker 데몬 arch와 같아야 한다 — 아니면 아무것도 바꾸기 전에 거부한다. `up`에는 `--no-build`를 싣는다.
+   `converge --dry-run`은 재생성할 것일 때 이미지마다 `ready`/거부 사유를 `images`에 싣는다.
+
+### 근거
+
+- 대조에 image ID를 쓰지 않는다 — n150(containerd snapshotter)은 manifest digest, odroid(overlay2)는 config digest라 같은 tar도
+  ID가 다르다. layer diff_id 목록은 저장소와 무관하므로 운반 대조는 그것으로 한다.
+- 내용 label은 위조 방지가 아니라 경로 확인이다 — 옛 경로(운영 박스 compose build)로 만든 같은 태그나 손으로 붙인 태그를 거른다.
+  태그 자체가 build context 내용 해시라 내용 대조는 태그가, 경로 대조는 label이 한다.
+- 스크립트는 표준 라이브러리만 쓴다 — 설치본 venv 없이 저장소 체크아웃에서 돈다.
+
+### 결과(긍정)
+
+- 운영 박스의 plane 수렴이 PyPI·CPU·IO를 쓰지 않는다. 받은 이미지가 맞지 않으면 바꾸기 전에 멈춘다(반쯤 바꾼 plane이 없다).
+- arm64(odroid) 이미지도 같은 스크립트로 WSL에서 교차 빌드한다(qemu binfmt).
+
+### 결과(부정)·잃는 것
+
+- host 이미지가 바뀌는 설치는 운반 단계가 하나 는다. 운반 전 converge는 거부된다(의도).
+- label이 없는 기존 이미지(운영 박스에서 빌드한 `0a02ea5b…`·`11a71574…`)는 plane을 다시 만들 일이 생기면 쓰지 않는다 — 이 결정과
+  함께 태그가 바뀌므로(Common py 0.1.0.dev2) 두 호스트 모두 새 이미지를 받는다.
+- `ktdctl ensure dagster --build`(개발 환경 경로)는 그대로 둔다 — 운영 박스에서 쓰지 않는 것은 문서 규칙이다.
+
+### 후속
+
+- (open) n150·odroid에 `fc52552976c61b10` 운반·converge(n150 부모, odroid Codex).
+- (open) 다른 Manager 소유 이미지(compose `build:`가 있는 서비스)도 같은 운반 경로로 옮길지.

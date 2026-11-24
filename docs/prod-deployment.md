@@ -260,9 +260,9 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane conve
 sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm   # → …/workspace.<KTDM_HOST>.yaml
 ```
 
-**오래 걸릴 수 있다.** 설치로 plane 이미지 태그가 바뀌면(`kor-travel-dagster-host`) `--confirm`이 그 이미지를 **빌드**한 뒤
-재생성한다 — 출력 없이 15분 남짓 걸릴 수 있다(2026-10-17 n150 실측 약 15분). ssh가 끊기지 않게 tmux/nohup 안에서 돌리고, 감싸는
-timeout을 둔다면 30분 이상으로 둔다. `--dry-run` 이유에 `rendered image is not present locally`가 있으면 빌드가 포함된다는 뜻이다.
+**운영 박스에서는 빌드하지 않는다(ADR-67).** 설치로 plane 이미지 태그(`kor-travel-dagster-host`)가 바뀌면 `--confirm` 전에
+개발 장비(WSL)에서 빌드한 이미지를 옮겨 둔다 — 없거나 내용 label·arch가 맞지 않으면 `--confirm`은 아무것도 바꾸지 않고 거부한다.
+`--dry-run`이 `images`에 이미지마다 `ready`/거부 사유를 싣는다. 절차는 §8.2 "host 이미지 운반".
 
 설치기도 flip 전에 같은 것을 본다(`plane-binds` — 떠 있는 plane의 workspace bind 파일이 새 release에 없으면 "converge
 먼저"로 거부). 자세한 converge 절차는 §8.2.
@@ -991,8 +991,24 @@ preflight는 plane이 unhealthy이면 재구축을 시작하지 않는다 — �
 호스트 preflight(`~/preflight.sh`, 저장소 밖)의 **plane health를 뺀 나머지 검사**(load·디스크·상시 서비스 등)가 PASS여야
 한다. 그 순간 실패해도 되는 항목은 **plane health 하나뿐**이고(이 명령이 고치는 대상이다), 운영자·소유자가 그것을
 받아들이고 `--confirm`을 돌린다 — 일반 면제가 아니다. 다른 항목이 하나라도 실패하면 돌리지 않는다 → ④ `--confirm` → ⑤ preflight가 **전부** PASS → ⑥ pinned 재구축. `--dry-run` 이유에 `rendered image is not present
-locally`가 있으면 `--confirm`의 `up`이 G 아래에서 `kor-travel-dagster-host` 이미지를 **빌드**한다(재구축의 plane 수렴과
-같다) — 부하가 낮을 때 돌리거나 이미지를 먼저 준비한다. 빌드가 포함되면 출력 없이 15분 남짓 걸릴 수 있다(2026-10-17 n150 실측 약 15분) — tmux/nohup 안에서, 감싸는 timeout은 30분 이상.
+locally`가 있으면 아래 "host 이미지 운반"을 먼저 한다 — `--confirm`은 빌드하지 않고 거부한다(ADR-67, 2026-11-24 전에는 G 아래에서
+n150이 15분 남짓 빌드했다). `--dry-run` 결과의 `images`가 전부 `ready`여야 `--confirm`이 재생성까지 간다.
+
+**host 이미지 운반(ADR-67).** 운영 박스(n150·odroid)는 이미지를 빌드하지 않는다. Windows 개발 장비의 WSL에서, 설치할 Manager
+revision의 체크아웃으로:
+
+```bash
+# 개발 장비(WSL) — build context 내용 해시가 compose 태그와 같아야 빌드한다. 운영 박스에서는 거부한다.
+python3 scripts/dagster_host_image.py build --platform linux/amd64 --output-dir ~/ktdm-dagster-host-dist   # n150
+python3 scripts/dagster_host_image.py build --platform linux/arm64 --output-dir ~/ktdm-dagster-host-dist   # odroid(qemu binfmt:
+#   docker run --privileged --rm tonistiigi/binfmt:qemu-v9.2.2 --install arm64 — WSL 재시작마다)
+# 개발 장비 → 운영 박스: tar sha256을 receipt와 대조 → ssh docker load → 받은 쪽 platform·내용 label·layer digest 대조.
+python3 scripts/dagster_host_image.py load --ssh <host> ~/ktdm-dagster-host-dist/kor-travel-dagster-host_<tag>_<arch>.tar
+```
+
+`load`는 이미지만 넣는다(컨테이너·compose는 건드리지 않는다). 스크립트 없이 하려면 `ssh <host> docker load < <tar>` 뒤
+`docker image inspect --format '{{.Architecture}} {{index .Config.Labels "io.kor-travel-docker-manager.dagster-host-content"}}' kor-travel-dagster-host:<tag>`가
+호스트 arch와 태그를 내야 한다. 그 다음 위 ①~⑥(`--dry-run`의 `images`가 `ready`인지 먼저 본다).
 
 ```bash
 # 보기만 한다(아무것도 바꾸지 않고 종료 코드는 항상 0). 서비스별 차이(이미지·env 이름·파일 digest 떠 있는 값 != render 값)와 health(한 번 관측)를 낸다.

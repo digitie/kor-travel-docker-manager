@@ -1,3 +1,17 @@
+## 2026-11-24 — Common py 0.1.0.dev2 채택·운영 박스 빌드 금지(ADR-67)
+
+- vendor wheel dev0(`b4f7f3d`) → dev2(`f1faf56`, prerelease `py-v0.1.0.dev2`, SHA256 `aa65a95e…b5c0`). 독립 재빌드(uv 0.11.21,
+  `SOURCE_DATE_EPOCH=1795475640`) byte 동일, package 21개 Git bytes 일치. 잠금은 Common 한 줄만, host 이미지 tag `0a02ea5b…` →
+  `fc52552976c61b10`. daemon에 pool env 셋(기본 4·4·10), webserver에 `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING` 기본 1을 렌더.
+- 접속 예산(role 한도 45): daemon primary 상한 12 → 24, 상주 6 → 12. 상주 합 약 15(n150 실측 지금 8), 바쁜 시간 동시 최악 ≈45 —
+  관측 뒤 pool 3+3 또는 한도 60(소유자). [daemon-pool-adoption.md](daemon-pool-adoption.md).
+- ADR-67: `dagster-plane converge`·재구축 plane 수렴이 없는 이미지에 `--build`를 붙여 n150에서 빌드하던 것을 없앴다. WSL에서
+  `scripts/dagster_host_image.py build --platform linux/{amd64,arm64}`(내용 label·receipt) → `load --ssh`(tar sha256·platform·label·
+  layer digest 대조) → converge는 이미지가 있고 label·arch가 맞을 때만 `run`·`up --no-build`. dry-run `images`에 준비 상태.
+  image ID는 저장소 종류(n150 containerd, odroid overlay2)마다 뜻이 달라 대조하지 않는다.
+- WSL 빌드: amd64·arm64(qemu) 둘 다 빌드, 실제 SDK 격리 PG 스모크(migrate·daemon pool 줄·webserver pre-ping·PG 재시작 뒤 첫 요청)
+  통과. 시험 `test_dagster_host_image.py`(신규), converge·adoption·shared config 시험 갱신.
+
 ## 2026-11-24 — 공용 Dagster storage 보존 정리(ADR-66)
 
 - 소유자 결정: run SUCCESS 90일·FAILURE·CANCELED 180일, 멈춘 instigator의 14일 넘은 tick. 정리 job은 Manager 소유, 주 1회(일요일

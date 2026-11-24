@@ -13,8 +13,16 @@
   compose)에 `DAGSTER_GRPC_TIMEOUT_SECONDS=300` + schedule·sensor 60·repository 180·shutdown 유예 60**(지금 proxy 기본 60이라 daemon 360이
   무효 — 중복 기동의 원인), storage migrate 실행(#631 `job_ticks` 인덱스), transport는 자기 배포
   helper로 같은 path.
-- [ ] **storage 연결 풀(Common)**: daemon pool 상수(2+2·대기 1초)를 키우고 대기 ≥10초, webserver에 pre-ping — dagster-postgres
-  설정 키가 없어 Common `_daemon_pool_plugin.py`·`dagster_webserver.py` 변경 → wheel vendor → host 이미지 tag.
+- [x] **storage 연결 풀(Common)**: daemon pool 상수(2+2·대기 1초)를 키우고 대기 ≥10초, webserver에 pre-ping — Common #90·#91
+  (py 0.1.0.dev2, `f1faf56`) → vendor wheel·host 이미지 tag `fc52552976c61b10`, daemon pool env(4·4·10)·webserver pre-ping 기본 켬 렌더.
+  [채택·접속 예산](daemon-pool-adoption.md).
+  - [ ] **적용**: WSL에서 빌드한 이미지 운반(아래 ADR-67) → plane 수렴(n150 부모, odroid Codex). 배포 뒤 role 연결 수(상주 약 15 예상,
+    한도 45)·`Retrying failed database connection` 빈도·첫 요청 실패 사라짐 관측.
+  - [ ] 소유자: 바쁜 시간 동시 최악 ≈45로 role `CONNECTION LIMIT 45`에 닿는다 — 관측 뒤 pool 3+3 또는 한도 60 중 결정.
+- [x] **운영 박스 빌드 금지(ADR-67, 2026-11-24 소유자 결정)**: plane 수렴이 `--build`로 n150에서 host 이미지를 빌드하던 것을 없앴다 —
+  `scripts/dagster_host_image.py build`(WSL)·`load --ssh`(tar sha256·platform·내용 label·layer digest 대조), converge는 받은 이미지의
+  내용 label·arch를 보고 아니면 바꾸기 전에 거부.
+  - [ ] 다른 Manager 소유 이미지(compose `build:`가 있는 서비스)도 같은 운반 경로로 옮길지.
 - [x] **멈춘 instigator의 옛 tick·runs·event_logs 보존**(2026-11-24 소유자 결정, ADR-66): Manager 주간 정리 job — run SUCCESS 90일·
   실패 180일, 멈춘 instigator tick 14일. [정본](dagster-storage-retention.md).
   - [ ] **설치**(각 호스트): Manager 설치 → dry-run 확인(n150 tick 약 7.06만·run 0, odroid tick 326) → `--apply` 한 번 →

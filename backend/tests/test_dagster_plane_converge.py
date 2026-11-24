@@ -38,12 +38,12 @@ _REBUILD_ENVIRONMENT = {
 _IMAGE_ID = "sha256:" + "e" * 64
 
 
-def _migrate_runs(resolved: dict[str, Any], names: tuple[str, ...], *build: str) -> list[tuple[str, ...]]:
+def _migrate_runs(resolved: dict[str, Any], names: tuple[str, ...]) -> list[tuple[str, ...]]:
     """`up` 앞에 도는 one-shot `run`들 — render의 `service_completed_successfully` 의존에서 파생(이름 목록 없음)."""
 
     oneshots = compose_service_module._completed_oneshot_dependencies(resolved["services"], names)
     assert oneshots, "the plane must wait for at least one one-shot (storage migrate)"
-    return [("run", "--rm", "--no-deps", *build, name) for name in oneshots]
+    return [("run", "--rm", "--no-deps", name) for name in oneshots]
 
 
 def _installed_render() -> dict[str, Any]:
@@ -161,6 +161,8 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         "_read_shared_workspace_locations": lambda _source, **_kwargs: (),
         "_inspect_plane_container": plane_container,
         "_inspect_image_reference_id": lambda _reference, *, label: _IMAGE_ID,
+        # 받아 둔 host 이미지(ADR-67): 기본은 내용 label·arch가 맞다. 시험이 바꿔 거부를 본다.
+        "_prebuilt_host_image_id": lambda _image: _IMAGE_ID,
         "_run_frozen_recovery": frozen_recovery,
     }.items():
         monkeypatch.setattr(service, name, replacement)
@@ -181,7 +183,7 @@ def test_a_stale_plane_recreates_only_the_plane_services_under_the_lock(
     migrate = _migrate_runs(harness.resolved, harness.plane.services)
     assert calls == [
         *((args, True) for args in migrate),
-        (("up", "-d", "--no-deps", *harness.plane.services), True),
+        (("up", "-d", "--no-deps", "--no-build", *harness.plane.services), True),
     ]
     # plane 밖 서비스(Map·PinVi slot, gateway, code-server)는 render에 있어도 `up`에 들지 않는다.
     others = set(harness.resolved["services"]) - set(harness.plane.services)
@@ -201,24 +203,66 @@ def test_converge_captures_the_rebuilds_pinned_scope(harness: SimpleNamespace, d
     )
 
 
-def test_a_missing_plane_image_is_built_explicitly(
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_plane_image_that_was_not_loaded_is_refused_and_never_built(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    """운영 박스는 빌드하지 않는다(ADR-67) — 받은 이미지가 없거나 맞지 않으면 바꾸기 전에 거부한다.
+
+    예전에는 없는 이미지에 `--build`를 붙여 그 자리(n150)에서 빌드했다. 이제 `run`·`up` 어느 것도 부르지 않고, dry-run은
+    거부 사유를 `images`에 싣는다(무엇을 옮겨야 하는지 `--confirm` 전에 보인다).
+    """
+
+    checked: list[str] = []
+
+    def not_loaded(image: str) -> str:
+        checked.append(image)
+        raise DeploymentContractError(f"{image} is not on this host; operating hosts do not build it")
+
+    monkeypatch.setattr(harness.service, "_prebuilt_host_image_id", not_loaded)
+
+    if dry_run:
+        result = harness.service.converge_shared_dagster_plane(dry_run=True)
+        image = harness.resolved["services"][harness.plane.daemon]["image"]
+        assert result["outcome"] == "would_recreate"
+        assert result["images"] == {image: f"{image} is not on this host; operating hosts do not build it"}
+    else:
+        with pytest.raises(DeploymentContractError, match="do not build"):
+            harness.service.converge_shared_dagster_plane(dry_run=False)
+    assert harness.state.compose_calls == []
+    assert checked and len(set(checked)) == 1
+
+
+def test_every_plane_image_is_checked_before_the_first_change(
     harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """설치로 plane 이미지 태그가 바뀌면 `up`이 `--build`를 싣는다 — build 절은 명시 build에만 남는다."""
+    """one-shot(storage migrate)과 plane이 다른 이미지를 쓰면 둘 다 본 뒤에야 `run`한다 — 반쯤 바꾸고 멈추지 않는다."""
 
-    def absent(_reference: str, *, label: str) -> str:
-        raise DeploymentContractError(f"{label} image is not present")
+    services = harness.resolved["services"]
+    services["kor-travel-dagster-storage-migrate"]["image"] = "kor-travel-dagster-host:" + "0" * 16
+    seen: list[str] = []
 
-    monkeypatch.setattr(harness.service, "_inspect_image_reference_id", absent)
+    def only_the_migrate_image_is_loaded(image: str) -> str:
+        seen.append(image)
+        if image.endswith("0" * 16):
+            return _IMAGE_ID
+        raise DeploymentContractError(f"{image} is not on this host")
 
-    harness.service.converge_shared_dagster_plane(dry_run=False)
+    monkeypatch.setattr(harness.service, "_prebuilt_host_image_id", only_the_migrate_image_is_loaded)
 
-    calls = harness.state.compose_calls
-    migrate = _migrate_runs(harness.resolved, harness.plane.services, "--build")
-    assert calls == [
-        *((args, True) for args in migrate),
-        (("up", "-d", "--no-deps", "--build", *harness.plane.services), True),
-    ]
+    with pytest.raises(DeploymentContractError, match="not on this host"):
+        harness.service.converge_shared_dagster_plane(dry_run=False)
+    assert harness.state.compose_calls == []
+    assert seen[0].endswith("0" * 16) and len(set(seen)) == 2
+
+
+def test_a_ready_plane_image_is_reported_by_dry_run(harness: SimpleNamespace) -> None:
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    image = harness.resolved["services"][harness.plane.daemon]["image"]
+    assert result["images"] == {image: "ready"}
+    harness.state.stale = {name: False for name in harness.plane.services}
+    assert harness.service.converge_shared_dagster_plane(dry_run=True)["images"] == {}
 
 
 def test_a_failed_storage_one_shot_leaves_the_plane_untouched(
@@ -725,7 +769,7 @@ def test_pinned_rebuild_preserves_an_existing_stopped_daemon(
     if stale_webserver or daemon_state in {"missing", "restarting"}:
         expected = (plane.webserver,) if daemon_state == "stopped" else plane.services
         assert calls == [
-            *_migrate_runs(harness.resolved, expected), ("up", "-d", "--no-deps", *expected)
+            *_migrate_runs(harness.resolved, expected), ("up", "-d", "--no-deps", "--no-build", *expected)
         ]
     else:
         assert calls == []
@@ -795,7 +839,7 @@ def test_converge_recreates_a_plane_without_log_limits_once(harness: SimpleNames
     assert result["outcome"] == "recreated" and result["success"] is True
     assert harness.state.compose_calls == [
         *((args, True) for args in _migrate_runs(harness.resolved, harness.plane.services)),
-        (("up", "-d", "--no-deps", *harness.plane.services), True),
+        (("up", "-d", "--no-deps", "--no-build", *harness.plane.services), True),
     ]
     # 재생성 뒤에는 남은 차이가 없다 — 다음 converge는 무연산이다.
     assert result["remaining_drift"] == {name: [] for name in harness.plane.services}
@@ -911,7 +955,8 @@ def test_rebuild_plane_convergence_recreates_a_plane_without_log_limits(
     service._converge_shared_dagster_plane(runtime_transaction=SimpleNamespace(), topology=topology)
 
     assert calls == [
-        *_migrate_runs(harness.resolved, plane.services), ("up", "-d", "--no-deps", *plane.services)
+        *_migrate_runs(harness.resolved, plane.services),
+        ("up", "-d", "--no-deps", "--no-build", *plane.services),
     ]
     assert not any(service._shared_plane_drift(plane, harness.resolved["services"]).values())
 

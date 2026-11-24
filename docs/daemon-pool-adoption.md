@@ -168,3 +168,49 @@ env편집 준비의 AssertionError/StopIteration은 파일쓰기 전 검증에�
 제품bd8과 설명정정c654의 독립2리뷰 및 제품CI2SUCCESS는
 [원문·해시·범위](reviews/2026-10-18-common-union-consumer-closure/README.md)에 보존한다.
 기존 실패·격리·운영 NOT_RUN 한계를 유지하며 source 통과를 실제 이미지/서비스·성능 수용으로 바꾸지 않는다.
+
+## Common py 0.1.0.dev2 채택과 접속 예산(2026-11-24)
+
+vendor wheel을 Common `f1faf56`(py 0.1.0.dev2, GitHub prerelease `py-v0.1.0.dev2`) 정식 wholewheel(83,112B, SHA256
+`aa65a95e…b5c0`)로 바꿨다. dev0(`b4f7f3d`)에서 바로 dev2로 가므로 dev1(`ec5e168`)의 변경도 함께 들어온다. 독립 재빌드(f1faf56 Git
+archive, uv 0.11.21, `SOURCE_DATE_EPOCH=1795475640`)가 byte 동일했고 package 21개 Git bytes·RECORD nonself 26행을 대조했다.
+기존 71개 runtime 잠금(버전·해시)은 그대로이고 Common 한 줄(버전·해시)과 Dockerfile의 wheel 이름만 바뀌었다. 5입력 내용 태그는
+`fc52552976c61b10`이다.
+
+| | dev0(b4f7f3d, 지금 운영) | dev2(f1faf56, 이 채택) |
+|---|---|---|
+| daemon primary engine(run·event·schedule) 각 pool | 2+2, 대기 1초, 수명 잠금 **안**에서 대기 | 4+4, 대기 10초, 잠금 **밖**에서 대기 |
+| daemon primary 연결 상한 / 유휴 보관 | 12 / 6 | 24 / 12 (env 상한 3×10=30) |
+| webserver storage | pre-ping 없음 | `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING=1`(Manager 기본 켬) |
+
+**렌더.** daemon에만 `KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE`·`_MAX_OVERFLOW`·`_TIMEOUT_SECONDS`(`-` 보간, 기본 4·4·10 = Common 기본),
+webserver에만 `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING`(기본 1, 소유자 방향)을 싣는다. 이름은 wheel 원문의 상수와 대조한다
+(`test_the_rendered_env_names_are_the_ones_the_vendored_wheel_reads`). 빈 값·범위 밖은 Common이 종료 코드 2로 거절한다.
+
+**접속 예산 — 공용 role `kor_travel_dagster_shared_app` `CONNECTION LIMIT 45`.** 이 role 하나를 daemon·webserver·run worker(code-server의
+자식)·daemon의 임시 start_run instance가 함께 쓴다. `max_connections`(100)보다 이 한도가 먼저 걸린다.
+
+| 몫 | 상주(유휴) | 상한 |
+|---|---|---|
+| daemon primary QueuePool | dev0 6 → **dev2 12** | dev0 12 → **dev2 24** |
+| webserver(`optimize_for_webserver` pool_size 1·overflow 20 ×3 engine) | 3 | 이론 63(동시 요청 수에 묶임 — 운영 관측 수 개) |
+| run worker(NullPool — 쓰는 동안만) | 0 | n150 전역 6 run × 1~2 ≈ 12, odroid 5 run ≈ 10 |
+| daemon 임시 start_run instance(NullPool) | 0 | launch 동안 수 개 |
+
+- 상주: dev0 약 9(2026-11-24 n150 실측 이 role 연결 8, 전부 idle) → dev2 약 15. 격리 PG 실측(아래) daemon+webserver 상주 9는 빈
+  workspace라 primary pool이 덜 찬 값이다.
+- 바쁜 시간 동시 최악: 24 + 6 + 12 + 3 ≈ **45** — 한도에 닿는다. 넘치면 PostgreSQL이 새 접속을 `too many connections for role`로
+  거절하고 그때 접속하던 쪽(run worker면 run 실패)이 맞는다. daemon pool이 24를 모두 쓰는 것은 sensor·schedule worker(각 4)와
+  run coordinator·backfill·heartbeat가 한 engine에 동시에 몰릴 때뿐이라 흔하지 않지만, 0이라고 할 수 없다.
+- 그래서 기본값(24)은 Common 기본을 따르되 **올리지 않는다.** 한도를 넘는 징후(role 연결 수가 40 근처에 머묾, `too many connections`)가
+  보이면 ① `KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE=3`·`_MAX_OVERFLOW=3`(상한 18)으로 낮추거나 ② db-init의 role 한도를 올린다 —
+  n150 전체 client backend 36/100(2026-11-24), 이 role 몫 8을 빼면 다른 DB가 약 28이므로 60까지는 여유가 남는다. ②는 db-init
+  (`ensure dagster`)을 다시 도는 운영 변경이라 소유자 결정이다.
+
+**실제 SDK 확인(WSL 격리 PG, 운영 무관).** 새 이미지로 storage migrate → daemon(4·4·10) → webserver(pre-ping 1)를 띄워 daemon stderr
+`daemon 연결 풀: primary engine 3개 각 pool_size=4 max_overflow=4 pool_timeout=10s`, webserver stderr `webserver storage pre-ping: 켜짐`,
+GraphQL `runsOrError`·daemon 6종 healthy를 봤다. PG 컨테이너를 재시작(유휴 연결 절단)한 직후 첫 GraphQL 요청이 성공했고 daemon은
+재시도 경고 없이 70초 이상 돌았다. 잘못된 값(`POOL_SIZE=11`·빈 값, `PRE_PING=yes`)은 각각 종료 코드 2였다.
+운영 접속 수·tick 지연·수집 신선도는 배포 뒤 관측이다.
+
+**빌드 위치.** 이 이미지는 운영 박스에서 빌드하지 않는다(ADR-67) — WSL에서 `scripts/dagster_host_image.py build`로 만들어 옮긴다.

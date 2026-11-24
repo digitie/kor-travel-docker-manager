@@ -21,7 +21,7 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[2]
 _IMAGE = _ROOT / "docker/dagster-host"
 _VENDOR = _IMAGE / "vendor"
-_WHEEL = _VENDOR / "kor_travel_common-0.1.0.dev0-py3-none-any.whl"
+_WHEEL = _VENDOR / "kor_travel_common-0.1.0.dev2-py3-none-any.whl"
 # PR511 d021의71개 runtime 버전·전체 해시 집합. 주석/행 순서는 설치 의미가 아니다.
 _PRIOR_RUNTIME_MAP_SHA = "1bce71dd6639cca0be56d6d6f22a0503d5c12e01201afd946bab10c26d855ce8"
 
@@ -30,7 +30,8 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
     proof = json.loads((_VENDOR / "common-source.json").read_text())
     assert hashlib.sha256(_WHEEL.read_bytes()).hexdigest() == proof["wheel_sha256"]
     assert _WHEEL.stat().st_size == proof["wheel_bytes"]
-    assert proof["common"] == "b4f7f3dcb5f95c682b027e3886a603d5d02625d3"
+    assert proof["common"] == "f1faf56365854cefcc9e1f02f51c5b9c7e6a13ae"
+    assert proof["release"] == "py-v0.1.0.dev2"
     assert proof["product"] == proof["common"]
     with zipfile.ZipFile(_WHEEL) as wheel:
         names = wheel.namelist()
@@ -40,7 +41,7 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
         assert package == set(proof["package_files"])
         for name, digest in proof["package_files"].items():
             assert hashlib.sha256(wheel.read(name)).hexdigest() == digest
-        info = "kor_travel_common-0.1.0.dev0.dist-info/"
+        info = "kor_travel_common-0.1.0.dev2.dist-info/"
         rows = list(csv.reader(io.StringIO(wheel.read(info + "RECORD").decode())))
         checked = 0
         for name, digest, size in rows:
@@ -53,7 +54,7 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
                 checked += 1
             else:
                 assert name == info + "RECORD" and size == ""
-        assert checked == proof["record_rows_checked"] == 24
+        assert checked == proof["record_rows_checked"] == 26
         parser = configparser.ConfigParser()
         parser.read_string(wheel.read(info + "entry_points.txt").decode())
         assert parser["console_scripts"]["kor-travel-dagster-daemon"] == (
@@ -64,6 +65,10 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
         )
         assert parser["sqlalchemy.plugins"]["kortravel_daemon_pool"] == (
             "kortravelcommon._daemon_pool_plugin:DaemonPoolPlugin"
+        )
+        # dev2: webserver storage pre-ping(opt-in `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING=1`).
+        assert parser["sqlalchemy.plugins"]["kortravel_webserver_pre_ping"] == (
+            "kortravelcommon._webserver_pool_plugin:WebserverPrePingPlugin"
         )
         assert info + "licenses/LICENSE" in names and info + "licenses/NOTICE" in names
 
@@ -77,7 +82,7 @@ import kortravelcommon
 import kortravelcommon.daemon_pool
 import kortravelcommon.dagster_webserver
 distribution = importlib.metadata.distribution("kor-travel-common")
-assert distribution.version == "0.1.0.dev0"
+assert distribution.version == "0.1.0.dev2"
 assert len([e for e in distribution.entry_points if e.name == "kor-travel-dagster-daemon"]) == 1
 assert len([e for e in distribution.entry_points if e.name == "kor-travel-dagster-webserver"]) == 1
 assert not any(n == "dagster" or n.startswith("dagster.") for n in sys.modules)
@@ -116,7 +121,7 @@ def test_only_common_is_added_to_the_prior_runtime_lock() -> None:
     requirements = _requirements((_IMAGE / "requirements.txt").read_text())
     common = requirements.pop("kor-travel-common")
     proof = json.loads((_VENDOR / "common-source.json").read_text())
-    assert common == {"version": "0.1.0.dev0", "hashes": [proof["wheel_sha256"]]}
+    assert common == {"version": "0.1.0.dev2", "hashes": [proof["wheel_sha256"]]}
     assert len(requirements) == 71
     encoded = json.dumps(requirements, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == _PRIOR_RUNTIME_MAP_SHA
@@ -180,6 +185,47 @@ def test_workspace_refresh_option_is_daemon_only_and_default_is_unoptimized() ->
             if key in (service.get("environment") or {})] == ["kor-travel-dagster-daemon"]
     # `-`는 미설정만 기본60으로 처리한다. 명시 빈 문자열을 `:-`로 숨기지 않는다.
     assert services["kor-travel-dagster-daemon"]["environment"][key] == "${"+key+"-60}"
+
+
+_POOL_ENV = {
+    "KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": "4",
+    "KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW": "4",
+    "KOR_TRAVEL_DAGSTER_DAEMON_POOL_TIMEOUT_SECONDS": "10",
+}
+_PRE_PING = "KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING"
+
+
+def test_daemon_pool_env_is_daemon_only_with_the_common_defaults() -> None:
+    """dev2 연결 풀 크기·대기 env는 daemon에만 렌더하고 기본값은 Common 기본(4·4·10초)이다.
+
+    `-` 보간이라 미설정만 기본값이고 명시 빈 값은 Common이 종료 코드 2로 거절한다(reload와 같은 규칙).
+    """
+
+    services = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())["services"]
+    for key, default in _POOL_ENV.items():
+        assert [name for name, service in services.items()
+                if key in (service.get("environment") or {})] == ["kor-travel-dagster-daemon"]
+        assert services["kor-travel-dagster-daemon"]["environment"][key] == "${" + key + "-" + default + "}"
+
+
+def test_webserver_pre_ping_is_webserver_only_and_on_by_default() -> None:
+    """소유자 기본 켬(2026-11-24). `0`이면 원 동작 — daemon·migrate·code-server에는 렌더하지 않는다."""
+
+    services = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())["services"]
+    assert [name for name, service in services.items()
+            if _PRE_PING in (service.get("environment") or {})] == ["kor-travel-dagster-webserver"]
+    assert services["kor-travel-dagster-webserver"]["environment"][_PRE_PING] == "${" + _PRE_PING + "-1}"
+
+
+def test_the_rendered_env_names_are_the_ones_the_vendored_wheel_reads() -> None:
+    """Manager가 렌더하는 이름이 vendor wheel 원문의 상수와 같다 — 오타면 Common 기본값으로 조용히 돈다."""
+
+    with zipfile.ZipFile(_WHEEL) as wheel:
+        daemon = wheel.read("kortravelcommon/daemon_pool.py").decode()
+        web = wheel.read("kortravelcommon/dagster_webserver.py").decode()
+    for key in _POOL_ENV:
+        assert f'"{key}"' in daemon, key
+    assert f'PRE_PING_ENV = "{_PRE_PING}"' in web
 
 
 @pytest.mark.parametrize("raw,expected", [(None, [60, 300]), ("60", [60, 300]),
