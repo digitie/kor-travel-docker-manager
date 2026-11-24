@@ -26,6 +26,9 @@
 - [ ] n150 설치(부모), odroid 설치(Codex) 뒤 첫 평가 확인: 화면 "수집 경보" 점검 항목이 "확인 불가" 없이 채워지는지, `/metrics`의 fd 지표.
 - [ ] 두 호스트 py-spy 설치(진단 스택용). 없으면 /proc 스레드 상태만 남는다.
 - [ ] 소유자 결정: 외부 발송 채널(webhook 수신처 등), code-server 자동 재시작 허용 여부.
+- [x] transport 공항 통계 사전집계 갱신 지연 규칙 `analytics_refresh_lag`(run 태그 `kortravel/analytics-refresh`, 소스·단위·e2e 시험).
+- [ ] odroid Manager 배포(Codex) + transport #283 배포 뒤 첫 평가: odroid 점검 항목 "공항 통계 사전집계 갱신"이 정상(태그 없음), n150은 해당 없음.
+- [ ] (선택) 심각도 상승(주의→위험)도 webhook 전이로 보낼지 — 지금은 firing·resolved만 보낸다. 발송 채널 결정 때 함께.
 
 ## 2026-11-24 — 공용 PG 트랜잭션 유휴 세션 끊기
 

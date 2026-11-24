@@ -64,6 +64,17 @@ class RunRecord:
     never_started: bool
 
 
+@dataclass(frozen=True)
+class TaggedRun:
+    """종료 run 하나와 그 run에 붙은 태그 하나의 값(없으면 ``None``)."""
+
+    record: RunRecord
+    tag: str | None
+    #: 재시도로 만든 run(`dagster/parent_run_id` 또는 `kortravelcommon/infra_retry_parent`)이면 부모 run id.
+    #: 재시도 run은 부모의 비-`dagster/` 태그를 물려받으므로 그 태그가 자기 판정인지 알 수 없다.
+    retry_of: str | None = None
+
+
 def _number(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -197,6 +208,30 @@ SELECT coalesce(jsonb_agg(x), '[]'::jsonb) FROM (
 # location 거르기를 EXISTS 대신 바깥에서 한다. odroid에서 EXISTS가 location tag 1.5만 행의 semi-join으로
 # 풀려 22.6초가 걸렸다(2026-11-24 EXPLAIN, load 23). 위 모양은 job 인덱스 역방향 30행만 읽는다.
 
+# job 하나의 최근 종료 run과 그 run의 태그 하나(매 평가). 위와 같은 모양 — job의 최근 종료 run 30행을 읽고
+# location은 바깥에서 거른다. `since`(판정 창의 시작) 하한이 있어 job이 며칠 멈춰도 읽는 범위가 창 안의 종료 run으로
+# 묶인다. 2026-11-24 실측(창 2시간): odroid `idx_run_range` 81행 → 12행 51 ms, n150(그 job이 10-14 이후 없음)
+# `idx_run_range` 0행 0.7 ms. 하한이 없을 때는 odroid가 `runs_pkey` 역방향으로 job이 멈춘 뒤 쌓인 run을 전부 거슬렀다.
+_TAGGED_JOB_RUNS_SQL = f"""
+SELECT coalesce(jsonb_agg(x ORDER BY x.created DESC), '[]'::jsonb) FROM (
+  SELECT c.* FROM (
+    SELECT {_RUN_COLUMNS},
+      (SELECT t.value FROM run_tags t WHERE t.run_id = r.run_id
+         AND t.key = :'tag_key' LIMIT 1) AS tag_value,
+      (SELECT t.value FROM run_tags t WHERE t.run_id = r.run_id
+         AND t.key IN ('dagster/parent_run_id', 'kortravelcommon/infra_retry_parent') LIMIT 1) AS retry_of
+    FROM runs r
+    WHERE r.pipeline_name = :'job'
+      AND r.status IN ('SUCCESS', 'FAILURE', 'CANCELED')
+      AND r.update_timestamp >= (to_timestamp(:'since'::double precision) AT TIME ZONE 'UTC')
+    ORDER BY r.id DESC
+    LIMIT 30
+  ) c
+  WHERE c.location = :'location'
+  LIMIT :limit
+) x;
+"""
+
 
 @dataclass(frozen=True)
 class StorageTarget:
@@ -302,6 +337,23 @@ class StorageClient:
             if key in result and record.location == key[0]:
                 result[key].append(record)
         return result
+
+    def tagged_job_runs(
+        self, location: str, job: str, tag_key: str, *, since: float, limit: int
+    ) -> list[TaggedRun]:
+        """(location, job)의 ``since`` 뒤 갱신된 최근 종료 run(최신 먼저)과 각 run의 ``tag_key`` 태그 값."""
+
+        rows = self.query_json(_TAGGED_JOB_RUNS_SQL, {
+            "location": location, "job": job, "tag_key": tag_key, "since": f"{since:.3f}",
+            "limit": str(int(limit))})
+
+        def convert(row: Mapping[str, Any]) -> TaggedRun:
+            tag = row.get("tag_value")
+            parent = row.get("retry_of")
+            return TaggedRun(record=run_from_row(row), tag=tag if isinstance(tag, str) and tag else None,
+                             retry_of=parent if isinstance(parent, str) and parent else None)
+
+        return [item for item in _rows(rows, convert) if item.record.location == location]
 
 
 def _rows(rows: Any, convert: Callable[[Mapping[str, Any]], Any]) -> list[Any]:
@@ -556,6 +608,7 @@ __all__ = [
     "ProbeError",
     "RunRecord",
     "StorageClient",
+    "TaggedRun",
     "container_processes",
     "dagster_containers",
     "default_disk_paths",

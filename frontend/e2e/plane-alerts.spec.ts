@@ -66,6 +66,58 @@ test('수집 경보 패널: 진행 중인 경보·점검 항목·발송 꺼짐�
   expect(backend.errors).toEqual([]);
 });
 
+// transport 공항 통계 사전집계 갱신 지연(transport #283 run 태그 `kortravel/analytics-refresh`). odroid는 delayed
+// 2회 연속(주의), n150은 그 job이 없어 "해당 없음"이다.
+const analyticsAlert = {
+  key: 'analytics_refresh_lag:kor-travel-transport/airport_collection_job', rule: 'analytics_refresh_lag',
+  rule_label: '공항 통계 사전집계 갱신', subject: 'kor-travel-transport/airport_collection_job', severity: 'warning',
+  title: '공항 통계 사전집계 갱신 지연: airport_collection_job 최근 2회 연속(delayed)',
+  detail: '사전집계에 반영되지 않은 가장 오래된 적재가 15분을 넘었습니다. 대시보드는 아직 직전 사전집계를 냅니다. '
+    + '공항 수집 run 자체는 SUCCESS일 수 있습니다 — 수집은 되는데 대시보드 묶음 갱신이 밀린 것입니다.',
+  evidence: { statuses: ['delayed', 'delayed'], streak: 2 },
+  since: '2026-11-24T05:10:00Z', last_seen: '2026-11-24T05:12:00Z', resolved_at: null,
+};
+
+test('수집 경보 패널: 공항 통계 사전집계 갱신 지연은 주의로, transport가 없는 plane은 해당 없음으로 보인다', async ({ page }, testInfo) => {
+  let payload: unknown = {
+    ...quietPlaneAlerts, host: 'odroid',
+    summary: { state: 'firing', text: '경보 1건(심각 0, 주의 1)', critical: 0, warning: 1 },
+    alerts: [analyticsAlert],
+    checks: [{ rule: 'analytics_refresh_lag', label: '공항 통계 사전집계 갱신', state: 'firing',
+      detail: '최근 판정 run delayed · 2026-11-24T05:12:00Z' }],
+  };
+  const backend = await mockBackend(page, testInfo, { get planeAlerts() { return payload; } });
+  await login(page);
+
+  const panel = page.getByRole('region', { name: '수집 경보' });
+  await expect(panel).toContainText('공항 통계 사전집계 갱신 지연');
+  const item = panel.getByRole('list', { name: '진행 중인 수집 경보' }).getByRole('listitem');
+  await expect(item).toHaveCount(1);
+  await expect(item).toHaveAttribute('data-severity', 'warning');
+  await expect(item).toContainText('주의');
+  await expect(item).toContainText('최근 2회 연속(delayed)');
+  await expect(item).toContainText('SUCCESS일 수 있습니다');
+  await expect(item).toContainText('공항 통계 사전집계 갱신 ·');
+  await panel.getByText('점검 항목 1개').click();
+  await expect(panel.getByRole('list', { name: '수집 감시 점검 항목' })).toContainText('공항 통계 사전집계 갱신 · 경보');
+  await page.screenshot({ path: testInfo.outputPath(`plane-alerts-analytics-${testInfo.project.name}.png`), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+
+  // n150: 공항 job이 없다 — 경보 없이 "해당 없음"(정상으로도, 확인 불가로도 읽히지 않는다).
+  payload = {
+    ...quietPlaneAlerts, host: 'n150',
+    checks: [{ rule: 'analytics_refresh_lag', label: '공항 통계 사전집계 갱신', state: 'not_applicable',
+      detail: '최근 2시간 안에 끝난 kor-travel-transport/airport_collection_job run이 없습니다' }],
+  };
+  await page.reload();
+  await expect(panel.getByTestId('plane-alerts-summary')).toContainText('경보가 없습니다.');
+  await expect(panel.getByRole('list', { name: '진행 중인 수집 경보' })).toHaveCount(0);
+  await panel.getByText('점검 항목 1개').click();
+  await expect(panel.getByRole('list', { name: '수집 감시 점검 항목' }))
+    .toContainText('공항 통계 사전집계 갱신 · 해당 없음 — 최근 2시간 안에 끝난 kor-travel-transport/airport_collection_job run이 없습니다');
+  expect(backend.errors).toEqual([]);
+});
+
 test('수집 경보 패널: 경보가 없으면 상태로, 감시자가 멈추면 그 사실을 보인다', async ({ page }, testInfo) => {
   const stale = {
     ...quietPlaneAlerts, stale: true, evaluation_age_seconds: 1800,

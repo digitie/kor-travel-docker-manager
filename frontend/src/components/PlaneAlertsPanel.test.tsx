@@ -67,6 +67,29 @@ describe('PlaneAlertsPanel', () => {
     expect(screen.getByTestId('plane-alerts-summary')).toHaveAttribute('role', 'alert');
   });
 
+  it('공항 통계 사전집계 경보와 "해당 없음" 점검을 보인다', async () => {
+    mockedApiJson.mockResolvedValue({
+      ...BASE,
+      summary: { state: 'firing', text: '경보 1건(심각 1, 주의 0)', critical: 1, warning: 0 },
+      alerts: [{
+        key: 'analytics_refresh_lag:kor-travel-transport/airport_collection_job', rule: 'analytics_refresh_lag',
+        rule_label: '공항 통계 사전집계 갱신', subject: 'kor-travel-transport/airport_collection_job',
+        severity: 'critical', title: '공항 통계 사전집계 갱신 멈춤: airport_collection_job 최근 2회 연속(stale)',
+        detail: '대시보드가 원본 계산으로 떨어졌습니다.', evidence: { statuses: ['stale', 'stale'] },
+        since: '2026-11-24T05:00:00Z', last_seen: null, resolved_at: null,
+      }],
+      checks: [{ rule: 'analytics_refresh_lag', label: '공항 통계 사전집계 갱신', state: 'not_applicable',
+        detail: '최근 2시간 안에 끝난 kor-travel-transport/airport_collection_job run이 없습니다' }],
+    } satisfies PlaneAlertsResponse);
+    renderWithQueryClient(<PlaneAlertsPanel />);
+    const list = await screen.findByRole('list', { name: '진행 중인 수집 경보' });
+    expect(list).toHaveTextContent('심각');
+    expect(list).toHaveTextContent('공항 통계 사전집계 갱신 멈춤');
+    expect(list).toHaveTextContent('공항 통계 사전집계 갱신 ·');
+    expect(screen.getByRole('list', { name: '수집 감시 점검 항목', hidden: true }))
+      .toHaveTextContent('공항 통계 사전집계 갱신 · 해당 없음');
+  });
+
   it('감시자가 멈추면 그 사실을 보인다', async () => {
     mockedApiJson.mockResolvedValue({
       ...BASE, stale: true,
