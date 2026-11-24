@@ -1,3 +1,8 @@
+## 2026-11-24 — @kor-travel/ui 0.2.6·tokens 0.1.7 채택(선택 칸 터치·아코디언 outline·Dialog 긴 제목)
+
+- common #83(05d7f91: md 미만 VirtualTable 선택 칸 44×44, AccordionContent `overflow-clip`+clip-margin 4px, 닫기 버튼이 있는 Dialog 제목 `pr-7`)과 #84(309b881: catalog 동결) release pack(artifact 14803131043, run 45141922011, SHA256SUMS·SRI 일치)을 vendor·원장·lock·정책 `uses/common-ref`·출처 문서에 반영했다. toast 0.1.6은 쓰지 않는다. tgz package.json 차이는 version과 ui peer(tokens 0.1.7)뿐이라 lock은 두 항목만 바뀐다.
+- Manager 화면 영향 없음: VirtualTable 네 곳(원장·마운트·백업·고정 버전)에 행 선택이 없고, Accordion을 쓰지 않으며, `OpsDialog`는 `showCloseButton={false}`에 제목이 `sr-only`다. 기존 e2e(데스크톱·모바일)로 회귀만 확인한다.
+
 ## 2026-11-24 — 공용 Dagster plane 수집 감시(감사 §4 #1·#3·#19, ADR-64)
 
 - Manager backend 백그라운드 루프가 Dagster 밖에서 자기 호스트 plane을 판정한다: location tick 정지, schedule 주기 내 성공 없음,
