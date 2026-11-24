@@ -68,7 +68,7 @@ def test_registered_worker_uses_exact_container_and_mode(config, daemon, apply):
         "ok": True, "schema_version": 1, "mode": mode, "target": "example",
     }
     daemon.exec_create.assert_called_once_with("the-cid", [
-        "/usr/bin/timeout", "--kill-after=5s", "150s", "/opt/venv/bin/python",
+        "/usr/bin/timeout", "--kill-after=5s", "600s", "/opt/venv/bin/python",
         "-I", "-m", "application.compute_log_retention", f"--{mode}",
     ])
     daemon.exec_start.assert_called_once_with("the-exec", demux=True)
@@ -102,3 +102,10 @@ def test_unregistered_project_never_contacts_docker(config, daemon):
     with pytest.raises(ServiceReleaseError):
         retention.run(config, "unregistered", apply=True)
     daemon.exec_create.assert_not_called()
+
+
+def test_worker_timeout_is_reported_separately(config, daemon):
+    daemon.exec_start.return_value = (None, None)
+    daemon.exec_inspect.return_value = {"ExitCode": 124}
+    with pytest.raises(retention.RetentionWorkerTimeout):
+        retention.run(config, "example", apply=False)

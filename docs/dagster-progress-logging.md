@@ -64,5 +64,5 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/python -I -m kor_travel_do
 기존 core release 그룹에 속한 코드 서버 서비스, 컨테이너의 Python 경로와 모듈을 등록한다.
 전용 볼륨은 [Manager의 상태 볼륨 정책](service-current-release.md#이후-교체와-다른-프로젝트-채택)을 사용한다. 모듈은 `--dry-run`과 `--apply`를 지원하고
 stdout에 실행 모드와 성공 여부를 담은 버전 1 JSON 한 줄을 출력해야 한다.
-코드 서버 이미지의 `/usr/bin/timeout`이 최대 실행 시간을 제한한다. 정확한
+코드 서버 이미지의 `/usr/bin/timeout`이 한 번 실행을 10분으로 제한한다. 정확한
 대상에 대한 dry-run과 코드 서버 재생성 검증 뒤 해당 프로젝트의 타이머를 켠다.

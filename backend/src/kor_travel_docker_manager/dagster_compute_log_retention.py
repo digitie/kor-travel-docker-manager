@@ -22,6 +22,12 @@ from kor_travel_docker_manager.services.registry import TargetsConfigError, load
 from kor_travel_docker_manager.services.service_release import ServiceReleaseError
 from kor_travel_docker_manager.services.transport_core_state import project_lease
 
+WORKER_TIMEOUT_SECONDS = 600
+
+
+class RetentionWorkerTimeout(ServiceReleaseError):
+    pass
+
 
 def _target(config: dict, target: str) -> tuple[str, str, str, str, Path]:
     registrations = config.get("dagster_compute_log_retention", {})
@@ -72,7 +78,7 @@ def run(config: dict, target: str, *, apply: bool) -> dict:
     policy = persistent.policy_for(target, service)
     mode = "apply" if apply else "dry-run"
     with manager_mutation_lock(), project_lease(lease):
-        with closing(docker.DockerClient(base_url=persistent.LOCAL_DOCKER_HOST, timeout=180)) as docker_client:
+        with closing(docker.DockerClient(base_url=persistent.LOCAL_DOCKER_HOST, timeout=WORKER_TIMEOUT_SECONDS + 60)) as docker_client:
             client = docker_client.api
             records = candidate_service._inventory(docker_client)
             live = _running_code_server(records, project, service)
@@ -80,12 +86,15 @@ def run(config: dict, target: str, *, apply: bool) -> dict:
             persistent.verify_volume(policy, docker_client, proof, records, live)
             # Finish the in-container process before the Docker client can release the host lease.
             command = [
-                "/usr/bin/timeout", "--kill-after=5s", "150s", python, "-I", "-m", module, f"--{mode}",
+                "/usr/bin/timeout", "--kill-after=5s", f"{WORKER_TIMEOUT_SECONDS}s",
+                python, "-I", "-m", module, f"--{mode}",
             ]
             process = client.exec_create(live["Id"], command)
             output, _stderr = client.exec_start(process["Id"], demux=True)
             status = client.exec_inspect(process["Id"])["ExitCode"]
 
+    if status == 124:
+        raise RetentionWorkerTimeout("Dagster 로그 유지보수 실행 시간이 초과되었습니다.")
     report = json.loads(output or b"null")
     if (
         not isinstance(report, dict)
