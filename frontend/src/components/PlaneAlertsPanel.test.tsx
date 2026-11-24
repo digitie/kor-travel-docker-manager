@@ -90,6 +90,25 @@ describe('PlaneAlertsPanel', () => {
       .toHaveTextContent('공항 통계 사전집계 갱신 · 해당 없음');
   });
 
+  it('Telegram 발송 규칙과 chat 미설정을 보인다', async () => {
+    const telegram = {
+      name: 'telegram', enabled: true, configured: true,
+      url_env: 'PINVI_TELEGRAM_BOT_TOKEN_DEFAULT · KTDM_ALERT_TELEGRAM_CHAT_ID', last_error: null, last_sent_at: null,
+      policy: '위험 즉시 · 주의 매일 09시(KST) 요약 · 같은 경보 360분 안 반복 억제', suppressed: 0,
+    };
+    mockedApiJson.mockResolvedValue({ ...BASE, notifiers: [BASE.notifiers[0], telegram] });
+    renderWithQueryClient(<PlaneAlertsPanel />);
+    expect(await screen.findByTestId('plane-alerts-delivery')).toHaveTextContent(
+      '외부 발송: Telegram(위험 즉시 · 주의 매일 09시(KST) 요약 · 같은 경보 360분 안 반복 억제)');
+    cleanup();
+    mockedApiJson.mockResolvedValue({ ...BASE, notifiers: [BASE.notifiers[0], {
+      ...telegram, enabled: false, configured: false,
+      disabled_reason: 'KTDM_ALERT_TELEGRAM_CHAT_ID이(가) 비어 있습니다' }] });
+    renderWithQueryClient(<PlaneAlertsPanel />);
+    expect(await screen.findByTestId('plane-alerts-delivery')).toHaveTextContent(
+      'Telegram은 보내지 않습니다 — KTDM_ALERT_TELEGRAM_CHAT_ID이(가) 비어 있습니다');
+  });
+
   it('감시자가 멈추면 그 사실을 보인다', async () => {
     mockedApiJson.mockResolvedValue({
       ...BASE, stale: true,

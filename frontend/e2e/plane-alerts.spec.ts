@@ -118,6 +118,25 @@ test('수집 경보 패널: 공항 통계 사전집계 갱신 지연은 주의�
   expect(backend.errors).toEqual([]);
 });
 
+test('수집 경보 패널: Telegram 발송 규칙과 최근 실패를 숨기지 않는다', async ({ page }, testInfo) => {
+  const telegram = {
+    name: 'telegram', enabled: true, configured: true,
+    url_env: 'PINVI_TELEGRAM_BOT_TOKEN_DEFAULT · KTDM_ALERT_TELEGRAM_CHAT_ID', last_error: 'HTTP 429',
+    last_sent_at: '2026-11-24T01:00:00Z',
+    policy: '위험 즉시 · 주의 매일 09시(KST) 요약 · 같은 경보 360분 안 반복 억제', suppressed: 2,
+  };
+  const backend = await mockBackend(page, testInfo, {
+    planeAlerts: { ...quietPlaneAlerts, notifiers: [...quietPlaneAlerts.notifiers, telegram] },
+  });
+  await login(page);
+  const delivery = page.getByRole('region', { name: '수집 경보' }).getByTestId('plane-alerts-delivery');
+  await expect(delivery).toContainText('외부 발송: Telegram(위험 즉시 · 주의 매일 09시(KST) 요약');
+  await expect(delivery).toContainText('최근 실패 HTTP 429');
+  // 토큰 값은 화면에 없다 — 변수 이름도 발송 규칙 문구에 싣지 않는다.
+  await expect(delivery).not.toContainText('PINVI_TELEGRAM_BOT_TOKEN_DEFAULT');
+  expect(backend.errors).toEqual([]);
+});
+
 test('수집 경보 패널: 경보가 없으면 상태로, 감시자가 멈추면 그 사실을 보인다', async ({ page }, testInfo) => {
   const stale = {
     ...quietPlaneAlerts, stale: true, evaluation_age_seconds: 1800,

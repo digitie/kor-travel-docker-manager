@@ -53,6 +53,7 @@ from kor_travel_docker_manager.services.plane_watchdog_probe import (
     RunRecord,
     TaggedRun,
 )
+from kor_travel_docker_manager.services.plane_watchdog_telegram import TelegramNotifier
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,10 @@ _SECTION_KEYS: dict[str, dict[str, type | tuple[type, ...]]] = {
 }
 _WEBHOOK_KEYS: dict[str, type | tuple[type, ...]] = {"enabled": bool, "url_env": str,
                                                       "timeout_seconds": (int, float)}
+_TELEGRAM_KEYS: dict[str, type | tuple[type, ...]] = {
+    "enabled": bool, "token_env": str, "chat_id_env": str, "api_base": str, "timeout_seconds": (int, float),
+    "digest_hour_kst": int, "repeat_suppress_minutes": (int, float), "dashboard_url_env": str,
+}
 
 
 def _check_mapping(value: Any, keys: Mapping[str, type | tuple[type, ...]], where: str) -> dict[str, Any]:
@@ -207,9 +212,20 @@ def parse_config(document: Any) -> WatchdogConfig:
     storage = _check_mapping(document["storage"], _SECTION_KEYS["storage"], "storage")
     diagnostics = _check_mapping(document["diagnostics"], _SECTION_KEYS["diagnostics"], "diagnostics")
     notifiers_raw = document["notifiers"]
-    if not isinstance(notifiers_raw, dict) or set(notifiers_raw) != {"webhook"}:
-        raise ConfigError("notifiers는 webhook 하나를 가져야 합니다")
-    notifiers = {"webhook": _check_mapping(notifiers_raw["webhook"], _WEBHOOK_KEYS, "notifiers.webhook")}
+    if not isinstance(notifiers_raw, dict) or set(notifiers_raw) != {"webhook", "telegram"}:
+        raise ConfigError("notifiers는 webhook·telegram을 가져야 합니다")
+    notifiers = {"webhook": _check_mapping(notifiers_raw["webhook"], _WEBHOOK_KEYS, "notifiers.webhook"),
+                 "telegram": _check_mapping(notifiers_raw["telegram"], _TELEGRAM_KEYS, "notifiers.telegram")}
+    telegram = notifiers["telegram"]
+    if not 1 <= float(telegram["timeout_seconds"]) <= 30:
+        raise ConfigError("notifiers.telegram.timeout_seconds는 1~30이어야 합니다")
+    if not 0 <= telegram["digest_hour_kst"] <= 23:
+        raise ConfigError("notifiers.telegram.digest_hour_kst는 0~23이어야 합니다")
+    if not str(telegram["api_base"]).startswith("https://"):
+        raise ConfigError("notifiers.telegram.api_base는 https://여야 합니다")
+    for key in ("token_env", "chat_id_env", "dashboard_url_env"):
+        if not str(telegram[key]).strip():
+            raise ConfigError(f"notifiers.telegram.{key}: 비울 수 없습니다")
     return WatchdogConfig(interval_seconds=interval, storage=storage, rules=rules,
                           diagnostics=diagnostics, notifiers=notifiers)
 
@@ -975,6 +991,12 @@ class HostProbes:
         return capture_fd_usage(container, diagnostics_directory(self._config.diagnostics), context=context).as_dict()
 
 
+def _telegram_state_path() -> Path:
+    from kor_travel_docker_manager.services.trusted_install import TRUSTED_STATE_ROOT
+
+    return TRUSTED_STATE_ROOT / "plane-watchdog" / "telegram-state.json"
+
+
 def diagnostics_directory(settings: Mapping[str, Any]) -> Path:
     configured = str(settings.get("directory") or "").strip()
     if configured:
@@ -1009,6 +1031,7 @@ class PlaneWatchdog:
         probes: Probes | None = None,
         clock: Callable[[], float] = time.time,
         run_diagnostics_inline: bool = False,
+        telegram_state_path: Path | None = None,
     ) -> None:
         self.config = config
         self.config_error = config_error
@@ -1033,6 +1056,10 @@ class PlaneWatchdog:
         self._host = ""
         self._plane_expected = True
         self._notifier = (WebhookNotifier(config.notifiers["webhook"], host="") if config else None)
+        if telegram_state_path is None and probes is None:
+            telegram_state_path = _telegram_state_path()
+        self._telegram = (TelegramNotifier(config.notifiers["telegram"], host="", state_path=telegram_state_path,
+                                           clock=clock) if config else None)
         self._task: asyncio.Task | None = None
 
     # -- 루프 -------------------------------------------------------------
@@ -1265,8 +1292,8 @@ class PlaneWatchdog:
         error: str | None = None
         try:
             self._host = self._probes.host()
-            if self._notifier is not None:
-                self._notifier.set_host(self._host)
+            for notifier in self._notifiers():
+                notifier.set_host(self._host)
             self._plane_expected = self._probes.plane_expected()
             # 호스트 측정이 먼저다 — fd 관측의 location→컨테이너 대응을 storage 경보의 재시작 제안이 쓴다.
             observed |= self._host_round(findings, checks)
@@ -1296,13 +1323,23 @@ class PlaneWatchdog:
                 logger.warning("PLANE ALERT %s [%s] %s — %s", item.event, alert.severity, alert.title, alert.detail)
             else:
                 logger.info("PLANE ALERT resolved [%s] %s", alert.severity, alert.title)
-        if self._notifier is not None:
+        for notifier in self._notifiers():
             try:
-                self._notifier.send(transitions)
+                notifier.send(transitions)
             except Exception:  # noqa: BLE001
-                logger.exception("plane watchdog notifier failed")
+                logger.exception("plane watchdog notifier %s failed", notifier.name)
+        if self._telegram is not None:
+            with self._lock:
+                active_alerts = [alert.as_dict() for alert in self._book.active.values()]
+            try:
+                self._telegram.reconcile(active_alerts, observed)
+            except Exception:  # noqa: BLE001
+                logger.exception("plane watchdog telegram delivery failed")
         self._maybe_capture(transitions, now)
         return transitions
+
+    def _notifiers(self) -> list[Any]:
+        return [notifier for notifier in (self._notifier, self._telegram) if notifier is not None]
 
     def _maybe_capture(self, transitions: Sequence[Transition], now: float) -> None:
         """진단 수집 시점: location 정지가 처음 울릴 때, fd 경보가 (컨테이너, 심각도)마다 처음 울릴 때.
@@ -1422,7 +1459,7 @@ class PlaneWatchdog:
             "checks": checks,
             "locations": locations,
             "dagster_fds": fds,
-            "notifiers": [self._notifier.state()] if self._notifier else [],
+            "notifiers": [notifier.state() for notifier in self._notifiers()],
             "diagnostics": captures,
         }
 

@@ -443,6 +443,11 @@ export type PlaneAlertsResponse = {
     url_env: string;
     last_error: string | null;
     last_sent_at: string | null;
+    /** 발송 규칙 한 줄(Telegram: 위험 즉시·주의 요약·반복 억제). */
+    policy?: string;
+    suppressed?: number;
+    /** 보내지 않는 까닭(설정 꺼짐·토큰/chat 변수 비어 있음). 보낼 수 있으면 null. */
+    disabled_reason?: string | null;
   }[];
   diagnostics: { location: string; directory?: string; captured_at?: string; py_spy?: string; error?: string }[];
 };

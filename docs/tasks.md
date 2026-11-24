@@ -25,7 +25,10 @@
 - [x] 경보 규칙·읽기 전용 storage 질의·진단 수집·화면 패널·상태 API·fd 지표(소스, 단위·e2e 시험). [자세히](plane-watchdog.md)
 - [ ] n150 설치(부모), odroid 설치(Codex) 뒤 첫 평가 확인: 화면 "수집 경보" 점검 항목이 "확인 불가" 없이 채워지는지, `/metrics`의 fd 지표.
 - [ ] 두 호스트 py-spy 설치(진단 스택용). 없으면 /proc 스레드 상태만 남는다.
-- [ ] 소유자 결정: 외부 발송 채널(webhook 수신처 등), code-server 자동 재시작 허용 여부.
+- [x] 외부 발송 채널 = Telegram(PinVi 시스템 봇 토큰 재사용): 위험 즉시·주의 하루 1회 요약·반복 억제·해소 1회.
+- [ ] 소유자: 두 호스트 Manager root `.env`에 `KTDM_ALERT_TELEGRAM_CHAT_ID`(그리고 odroid에는 `PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`도 — odroid
+  root `.env`에 있는지 Codex가 이름으로만 확인). 넣은 뒤 첫 위험 경보·09시 요약 수신 확인.
+- [ ] 소유자 결정: code-server 자동 재시작 허용 여부.
 - [x] transport 공항 통계 사전집계 갱신 지연 규칙 `analytics_refresh_lag`(run 태그 `kortravel/analytics-refresh`, 소스·단위·e2e 시험).
 - [ ] odroid Manager 배포(Codex) + transport #283 배포 뒤 첫 평가: odroid 점검 항목 "공항 통계 사전집계 갱신"이 정상(태그 없음), n150은 해당 없음.
 - [ ] (선택) 심각도 상승(주의→위험)도 webhook 전이로 보낼지 — 지금은 firing·resolved만 보낸다. 발송 채널 결정 때 함께.
