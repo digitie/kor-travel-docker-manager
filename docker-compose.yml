@@ -2242,6 +2242,10 @@ services:
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
       # PinVi 시스템 Telegram 봇 token(apps/api telegram_notify). 비우면 시스템 봇 알림은 skip.
       PINVI_TELEGRAM_BOT_TOKEN_DEFAULT: ${PINVI_TELEGRAM_BOT_TOKEN_DEFAULT:-}
+      # 예약 알림 planner의 내부 경계(`/internal/telegram/plan`·`/plan/pending`, `X-Pinvi-Notification-Planner-Key`)를
+      # 여는 공유 키 — `pinvi-dagster-code-server`가 같은 root `.env` 값을 받는다. 비우면 API는 그 경로를 404로 닫고
+      # (PinVi `app/api/v1/telegram_planner.py`) 기동은 그대로다. 비밀이다 — 가림 규칙 `secret_scrub`의 `PLANNER_KEY`.
+      PINVI_TELEGRAM_PLANNER_KEY: ${PINVI_TELEGRAM_PLANNER_KEY:-}
       PINVI_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       PINVI_RUSTFS_PUBLIC_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}
       PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
@@ -2442,6 +2446,15 @@ services:
       # 파생물이고 `backend/tests/test_consumer_origin_defaults.py`가 렌더를 스캔해 대조한다. pinvi-api도
       # 같은 변수를 받는다.
       PINVI_KOR_TRAVEL_WEATHER_BASE_URL: ${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
+      # 예약 알림 planner(`pinvi_telegram_notification_planner` asset과 schedule의 할 일 점검)가 부르는 PinVi API와 그
+      # 공유 키. `PinviNotificationPlannerResource`가 읽는다 — schedule 평가와 run worker가 모두 이 프로세스 안이다. 키가
+      # 비면 점검은 run을 띄우지 않고 asset은 no-op이다(PinVi `notification_planner_gate.py`). URL은 같은 target·같은
+      # 호스트의 pinvi-api가 듣는 포트에서 파생한다(host network, 같은 호스트 안 참조는 loopback — `docs/ports.md`
+      # 호스트 규칙). root `.env`로 재정의하지 않는다: PinVi `.env.example`의 `http://app-api:8000`(PinVi 자체 compose의
+      # bridge 서비스명)이 복사되면 점검이 매분 실패해 run을 띄우고 run마다 실패한다. 결박은
+      # `backend/tests/test_pinvi_etl_env_wiring.py`(URL == pinvi-api `--port`·registry `connection`).
+      PINVI_NOTIFICATION_PLANNER_API_URL: http://127.0.0.1:${PINVI_API_PORT:-12801}
+      PINVI_TELEGRAM_PLANNER_KEY: ${PINVI_TELEGRAM_PLANNER_KEY:-}
     # 이미지에 구운 `apps/etl/dagster.yaml` 대신 공용 instance 정의를 붙인다.
     volumes:
     - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/pinvi/.dagster/dagster.yaml:ro

@@ -1,3 +1,9 @@
+## 2026-11-24 — PinVi 예약 알림 planner env 배선
+
+- [x] compose: `PINVI_TELEGRAM_PLANNER_KEY`(pinvi-api·code-server)·`PINVI_NOTIFICATION_PLANNER_API_URL`(code-server, API 포트 파생), 가림 규칙 `PLANNER_KEY`.
+- [ ] **n150 적용(부모)**: root `.env`에 키 → Manager 설치 → compose에서 다시 만드는 경로로 pinvi-api·code-server 회전(`apply-core-candidate`는
+  env 보존이라 안 된다) → 두 컨테이너 env에 이름 존재 확인(값 출력 금지) → planner schedule tick이 SKIPPED/run 성공인지.
+
 ## 2026-11-24 — 공용 Dagster 런타임 보강(수집 실패 감사 §4 3·4·7·8·16)
 
 - [x] nofile soft 8192·hard 65536(daemon·webserver·code-server 다섯 — 누수 완화, 원인은 PinVi·Concierge, fd 경보는 경보 작업), run queue launch 재시도 10회×60초, StartRun 예산 proxy 300 < daemon 360(짧으면 재제출이 run을 중복 기동),

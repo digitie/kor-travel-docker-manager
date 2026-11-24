@@ -1,3 +1,21 @@
+## 2026-11-24 — PinVi 예약 알림 planner env 배선(`PINVI_TELEGRAM_PLANNER_KEY`·`PINVI_NOTIFICATION_PLANNER_API_URL`)
+
+- 소유자 결정: PinVi 예약 알림 planner를 켠다. Manager compose가 `PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`만 넘기고 planner 두 이름을 넘기지
+  않아, root `.env`에 키를 넣어도 두 컨테이너에 닿지 않았다.
+- PinVi 원문(origin/main) 확인: API는 키만 읽는다(`config.py` `pinvi_telegram_planner_key: str = ""`, 비면 내부 경로 404). code-server의
+  `PinviNotificationPlannerResource`는 키와 URL을 읽는다 — 키가 비면 schedule 점검이 run을 띄우지 않고 asset은 no-op, URL이 비면
+  PinVi 기본값 `http://app-api:8000`(PinVi 자체 compose의 bridge 이름 — host network인 Manager에서는 닿지 않는다). 빈 값은 어디서도
+  기동을 막지 않는다 → `${PINVI_TELEGRAM_PLANNER_KEY:-}`는 안전하다.
+- 배선: 키는 pinvi-api·code-server 둘에만, URL은 code-server에만 `http://127.0.0.1:${PINVI_API_PORT:-12801}`(같은 target·호스트 →
+  loopback, pinvi-api `--port`와 같은 변수). root `.env` 재정의는 두지 않았다(선례 `PINVI_DAGSTER_BASE_URL`·`KTG_API_INTERNAL_URL`).
+- 비밀 가림 틈: `PINVI_TELEGRAM_PLANNER_KEY`는 `secret_scrub.SENSITIVE_KEY_PARTS` 어디에도 걸리지 않아 컨테이너 상세 화면의 inspect env와
+  실패 출력에 원문이 나갈 수 있었다. `PLANNER_KEY` 조각을 더하고(프런트 사본 `configValidation.ts` 동기), compose·`.env.example`의
+  `*KEY` 이름 전부가 규칙에 걸리는지 보는 선언 시점 검사를 더했다(`_KEY` 전체로 넓히면 `KTDM_METRICS_REQUIRE_KEY=true`의 값이 치환된다).
+- 적용 경로 주의: `apply-core-candidate pinvi`는 실행 중 env를 보존하므로 이 경로로는 새 env가 들어가지 않는다(docker-management.md 7.5a).
+- 시험: `backend/tests/test_pinvi_etl_env_wiring.py`(두 서비스 수신·빈 값·URL == `--port`·registry `connection`·`.env` URL 무시·다른 서비스
+  비수신·렌더 결과 가림), `backend/tests/test_secret_scrub.py`(심은 planner 키가 CLI 실패 출력·inspect env에서 가려짐, `*KEY` 이름 검사).
+  [자세히](docker-management.md#75a-pinvi-예약-알림-planner-키와-내부-url-2026-11-24)
+
 ## 2026-11-24 — Common py 0.1.0.dev2 채택·운영 박스 빌드 금지(ADR-67)
 
 - vendor wheel dev0(`b4f7f3d`) → dev2(`f1faf56`, prerelease `py-v0.1.0.dev2`, SHA256 `aa65a95e…b5c0`). 독립 재빌드(uv 0.11.21,

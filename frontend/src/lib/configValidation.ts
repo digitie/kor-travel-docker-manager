@@ -13,6 +13,7 @@ const SENSITIVE_KEY_PARTS = [
   'APIKEY',
   'SERVICE_KEY',
   'CREDENTIAL',
+  'PLANNER_KEY',
 ];
 
 function isSensitiveEnvKey(key: string): boolean {

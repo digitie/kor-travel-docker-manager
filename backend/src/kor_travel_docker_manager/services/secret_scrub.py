@@ -43,6 +43,11 @@ SENSITIVE_KEY_PARTS = (
     "APIKEY",
     "SERVICE_KEY",
     "CREDENTIAL",
+    # PinVi 예약 알림 planner 공유 키(`PINVI_TELEGRAM_PLANNER_KEY`) — 위 어느 조각에도 걸리지 않아 inspect env·실패
+    # 출력에 원문이 나갈 뻔했다(2026-11-24). `_KEY` 전체로 넓히지 않는 이유: `KTDM_METRICS_REQUIRE_KEY=true` 같은 플래그
+    # 값(`true`)이 실패 출력 전체에서 치환된다. compose의 `*_KEY` 이름이 이 규칙에 걸리는지는
+    # `test_every_compose_key_name_is_sensitive_unless_declared_public`이 본다.
+    "PLANNER_KEY",
 )
 
 # key 전체를 가리는 대신 userinfo의 비밀번호 구간만 치환한다. `..._BASE_URL`처럼 비밀이 아닌 URL은

@@ -23,6 +23,8 @@ from kor_travel_docker_manager.services.secret_scrub import (
 
 _ENV_TOKEN = "planted-token-9f3c71a2"
 _ENV_SERVICE_KEY = "planted-svc-key-5d18e0b4"
+#: PinVi 예약 알림 planner 공유 키 — 이름이 TOKEN·SECRET·API_KEY 어디에도 걸리지 않는다(`PLANNER_KEY` 조각).
+_ENV_PLANNER_KEY = "planted-planner-key-3e9b42c1"
 _PROCESS_SECRET = "planted-process-secret-77aa"
 _SQL_SECRET = "pa'ss-planted-42"
 
@@ -33,6 +35,7 @@ def planted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     env_file.write_text(
         f"KOR_TRAVEL_MAP_API_SERVICE_TOKEN={_ENV_TOKEN}\n"
         f"KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY={_ENV_SERVICE_KEY}\n"
+        f"PINVI_TELEGRAM_PLANNER_KEY={_ENV_PLANNER_KEY}\n"
         f'KTDM_C6C_PINVI_ADMIN_PASSWORD="{_SQL_SECRET}"\n'
         "KOR_TRAVEL_GEO_PUBLIC_API_KEY_CACHE_TTL_S=30\n",
         encoding="utf-8",
@@ -42,7 +45,9 @@ def planted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return env_file
 
 
-_SECRETS = (_ENV_TOKEN, _ENV_SERVICE_KEY, _PROCESS_SECRET, _SQL_SECRET, _SQL_SECRET.replace("'", "''"))
+_SECRETS = (
+    _ENV_TOKEN, _ENV_SERVICE_KEY, _ENV_PLANNER_KEY, _PROCESS_SECRET, _SQL_SECRET, _SQL_SECRET.replace("'", "''")
+)
 
 
 def _assert_scrubbed(output: str) -> None:
@@ -55,7 +60,7 @@ def _assert_scrubbed(output: str) -> None:
 
 def test_the_rules(planted: Path) -> None:
     text = (
-        f"token {_ENV_TOKEN} key {_ENV_SERVICE_KEY} env {_PROCESS_SECRET} "
+        f"token {_ENV_TOKEN} key {_ENV_SERVICE_KEY} planner {_ENV_PLANNER_KEY} env {_PROCESS_SECRET} "
         f"sql PASSWORD '{_SQL_SECRET.replace(chr(39), chr(39) * 2)}' "
         "dsn postgresql://ktm:dsn-pass-1234@127.0.0.1:12700/db ttl=30"
     )
@@ -222,6 +227,41 @@ def test_the_frontend_mirror_lists_the_same_key_parts() -> None:
     block = re.search(r"const SENSITIVE_KEY_PARTS = \[(.*?)\];", source, re.DOTALL)
     assert block is not None
     assert tuple(re.findall(r"'([A-Z_]+)'", block.group(1))) == SENSITIVE_KEY_PARTS
+
+
+#: `*KEY`로 끝나지만 비밀이 아닌 이름 — 값이 플래그라 가리면 실패 출력의 `true`·`false`가 전부 치환된다.
+_PUBLIC_KEY_NAMES = frozenset({"KTDM_METRICS_REQUIRE_KEY"})
+
+
+def test_every_compose_key_name_is_sensitive_unless_declared_public() -> None:
+    """compose·`.env.example`에 새 `*KEY` 이름이 생기면 가림 규칙에 걸리는지 선언 시점에 본다.
+
+    2026-11-24 `PINVI_TELEGRAM_PLANNER_KEY`가 어느 조각에도 걸리지 않아 Manager inspect env 화면과 실패 출력에 원문이
+    나갈 수 있었다. 규칙을 `_KEY` 전체로 넓히지 않았으므로(플래그 값 치환) 이 검사가 그 틈을 막는다.
+    """
+
+    import re
+
+    from kor_travel_docker_manager.services.secret_scrub import is_sensitive_key
+
+    root = Path(__file__).resolve().parents[2]
+    text = "\n".join(
+        (root / name).read_text(encoding="utf-8") for name in ("docker-compose.yml", ".env.example")
+    )
+    names = set(re.findall(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*KEY)(?![A-Za-z0-9_])", text))
+    assert "PINVI_TELEGRAM_PLANNER_KEY" in names  # 추출이 낡아 아무것도 못 보면 항진이 된다
+    assert _PUBLIC_KEY_NAMES <= names, "공개 예외 목록에 없어진 이름이 남아 있다"
+    assert sorted(name for name in names - _PUBLIC_KEY_NAMES if not is_sensitive_key(name)) == []
+
+
+def test_the_planner_key_is_redacted_in_container_inspect_env() -> None:
+    """Manager 컨테이너 상세 화면은 inspect env를 이 함수로 거른다 — planner 키 원문이 나가면 안 된다."""
+
+    from kor_travel_docker_manager.services.docker_service import _redact_env_pair
+
+    assert _redact_env_pair(f"PINVI_TELEGRAM_PLANNER_KEY={_ENV_PLANNER_KEY}") == (
+        f"PINVI_TELEGRAM_PLANNER_KEY={REDACTED}"
+    )
 
 
 # --------------------------------------------------------------------------- G-2 적대 리뷰

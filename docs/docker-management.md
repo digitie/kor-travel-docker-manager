@@ -913,6 +913,28 @@ manager `.env`의 `PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN`과
   Compose preflight가 container mutation 전에 중단한다. T-VN-40 rollout receipt가 pending인 동안
   빈 pair는 legacy compatible-pair를 위해 허용한다.
 
+### 7.5a PinVi 예약 알림 planner 키와 내부 URL (2026-11-24)
+
+PinVi 예약 Telegram 알림은 code-server의 매분 schedule이 PinVi API의 내부 경계(`/internal/telegram/plan`,
+`/plan/pending`)를 공유 키 헤더로 부르는 구조다(PinVi `docs/runbooks/telegram-notifications.md`).
+
+- **키** `PINVI_TELEGRAM_PLANNER_KEY` — root `.env` 하나가 정본이고 compose가 `${…:-}`로 `pinvi-api`와
+  `pinvi-dagster-code-server` **둘에만** 넘긴다(webserver·daemon·web·admin-bootstrap에는 없다). 비우면 꺼짐이다:
+  API는 그 경로를 404로 닫고, schedule 점검은 run을 띄우지 않고, asset은 `configured: False` no-op이다. 빈 값이 기동을
+  막지 않는다. 키 이름은 가림 규칙(`secret_scrub.SENSITIVE_KEY_PARTS`의 `PLANNER_KEY`)에 걸려 inspect env·실패 출력에서
+  가려진다.
+- **URL** `PINVI_NOTIFICATION_PLANNER_API_URL` — code-server만 읽는다(API는 읽지 않는다). 같은 target·같은 호스트·host
+  network라 compose가 `http://127.0.0.1:${PINVI_API_PORT:-12801}`로 파생한다(pinvi-api `--port`와 같은 변수). root
+  `.env`로 재정의하지 않는다 — PinVi `.env.example`의 `http://app-api:8000`은 PinVi 자체 compose의 bridge 서비스명이라
+  여기서는 닿지 않고, 그러면 점검이 fail-open으로 매분 run을 띄워 run마다 실패한다.
+- **켜기**: root `.env`에 키를 넣고 Manager 설치 → `pinvi-api`·`pinvi-dagster-code-server`를 다시 만든다(둘이 같은 값을
+  가져야 한다 — code-server만 새 키를 받고 API가 옛 값이면 점검·planner가 404를 받아 매분 run이 실패한다. 반대는 no-op). schedule 켜기는 PinVi 쪽 운영 판단이다.
+  ⚠️ `service-release apply-core-candidate pinvi`는 실행 중 컨테이너의 env를 보존하고 `PINVI_SOURCE_REVISION`만 바꾼다
+  (`service_release_component_candidate._preserve_environment`) — 그 경로로는 키·URL이 들어가지 않는다. compose에서
+  다시 만드는 경로(pinned 재구축 등)로 적용하고, 적용 뒤 두 컨테이너의 env에 이름이 있는지(값은 출력하지 않는다) 확인한다.
+- 결박: `backend/tests/test_pinvi_etl_env_wiring.py`(두 서비스 수신·빈 값·URL == `--port`·registry `connection`·`.env`
+  재정의 무시), `backend/tests/test_secret_scrub.py`(compose `*KEY` 이름 전부가 가림 규칙에 걸리는지).
+
 ### 7.6 T-VN-M01 manual Feature 생성 credential
 
 manual Feature 생성은 특정 provider나 PinVi 전용 기능이 아니다. Manager `.env`의
