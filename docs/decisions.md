@@ -2011,8 +2011,8 @@ Manager backend(systemd `ktdm-backend`)의 백그라운드 루프가 자기 호�
 - 기본 파일 bytes가 바뀌어 두 호스트 instance digest가 모두 바뀐다(odroid는 n150 location 항목의 값만 바뀌어도 직렬화가 달라진다) —
   각 호스트 plane 재생성이 필요하다. odroid는 #634 수렴과 함께 하면 한 번이다.
 - 우선순위는 줄 순서만 바꾼다. 도는 run을 멈추지 않는다.
-- pool에 막혀 큐에 남은 run도 location tag 카운터를 쓴다(Dagster 1.13.24) — 상한 4에서는 pool 대기 Map run 3개가 앞줄이면
-  priority 0 Map run이 막힌다. n150 수렴은 Map priority PR(state job 10) 배포 뒤로 한다.
+- pool에 막혀 큐에 남은 run도 location tag 카운터를 쓴다(Dagster 1.13.24) — 도는 Map run과 앞줄 pool 대기 run의 합이 4에 닿으면
+  priority 0 Map run(관리자 요청 포함)이 막힌다. n150 수렴은 Map priority PR(state job 10) 배포 뒤로 한다.
 
 ### 후속
 

@@ -22,8 +22,9 @@
   - [ ] **적용**: instance digest `f2e05ba6…` → `1e05358a…`(n150), odroid 파생 `3cecfb0d…` → `e8b5e65b…` — 각 호스트 plane 수렴.
   - [ ] PinVi·Concierge·geo `dagster/priority`(각 저장소 후속), 대화형 요청 run의 등급(소유자).
   - [ ] **n150 수렴 순서**: Map `dagster/priority` PR(state job 10) 배포 **뒤**에 수렴한다. Dagster 1.13.24 queue는 pool(`GEO_HEAVY` 등)에
-    막혀 큐에 남는 run도 location tag 카운터에 먼저 더한다(`queued_run_coordinator_daemon.py` 310-322) — 상한 4에서는 pool 대기 Map run 3개만
-    앞줄에 있어도 뒤의 priority 0 Map run이 location 상한에 막힌다(옛 10에서는 9개). state job이 10으로 앞줄에 서면 피한다.
+    막혀 큐에 남는 run도 location tag 카운터에 먼저 더한다(`queued_run_coordinator_daemon.py` 310-322) — 도는 Map run + 앞줄 pool 대기
+    run이 4(옛 10)에 닿으면 뒤의 priority 0 Map run(관리자 요청 worker 포함)이 location 상한에 막힌다. state job이 10으로 앞줄에 서면 피한다.
+  - [ ] weather code-server 메모리 상한 표기가 문서끼리 다르다(감사 §2.1 실측 2.5 GB vs `docs/decisions.md`의 odroid 1.5g·`.env.example` 1536m) — 정리.
   - [ ] weather `regional_weather` run group 상한 1을 공용 plane(`hosts.odroid`)에 둘지 — weather가 정했지만 공용 instance에는 없다.
   - [ ] transport `reference_export_prepare_job`(요청 실행 export)이 5 — 규칙상 0. 의도(유가 export 경로의 일부인지)를 transport가
     확인(Codex). 시간표 job(KRIC 매시·여객선 4시간) 0은 규칙과 같다(기준 자료).

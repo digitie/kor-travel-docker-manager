@@ -20,7 +20,8 @@ queue daemon(`QueuedRunCoordinatorDaemon`)은 매 dequeue에서
 **주의 — pool에 막힌 run도 tag 카운터를 쓴다.** 2단계에서 daemon은 tag 상한 검사를 통과한 run을 먼저 tag 카운터에 더하고,
 그다음 pool(op concurrency, Map의 `GEO_HEAVY` 등)에 막히면 큐에 남긴다 — 더한 카운트는 되돌리지 않는다
 (`queued_run_coordinator_daemon.py` 310-322). 그래서 같은 location의 pool 대기 run이 앞줄에 쌓이면 뒤의 run은 실제로 도는 run이
-상한보다 적어도 location 상한에 막힌다. location 상한이 작을수록 이 문턱이 낮다(Map 10이면 앞줄 9개, 4면 3개). 앞줄에 서는
+상한보다 적어도 location 상한에 막힌다 — 막히는 조건은 `도는 run + 앞줄 pool 대기 run ≥ location 상한`이다(`TagConcurrencyLimitsCounter.is_blocked`,
+count ≥ limit). location 상한이 작을수록 이 문턱이 낮다(Map 10이면 합 10, 4면 합 4 — 도는 Map run 1개에 pool 대기 3개). 앞줄에 서는
 것이 우선순위이므로, 실시간 run에 10을 다는 것이 이 지연을 피하는 방법이다.
 
 우선순위는 instance 전체의 줄 순서다. 다른 테넌트의 run과도 비교된다.
@@ -56,12 +57,12 @@ queue daemon(`QueuedRunCoordinatorDaemon`)은 매 dequeue에서
 | 값 | 분류 | 기준(둘 다 만족) | 예 |
 |---|---|---|---|
 | **10** | 실시간 수집 | 지금 상황(현황·상태)을 담는 자료를 1시간 미만 주기로 갱신하는 정기 수집·상태 적재 | transport 공항 주차·고속도로 소통(5분) |
-| **5** | 매시 수집 | 시간 단위로 바뀌는 값(가격·예보 등)을 1시간 이상·하루 미만 주기로 갱신하는 정기 수집 | transport 유가·휴게소 유가 |
+| **5** | 매시 수집 | 시간 단위로 바뀌는 값(가격·예보 등)을 하루 미만 주기로 갱신하는 정기 수집(1시간 미만이어도 현황이 아니면 5) | transport 유가·휴게소 유가 |
 | **0** | 배치 | 그 밖 전부 — 기준정보·시간표·목록 같은 기준 자료(주기와 무관), 하루 이상 주기, backfill·전체 재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | transport KRIC 시간표(매시)·여객선 시간표(4시간), 일 1회 적재, 보존 정리 |
 
 경계:
 
-- 정확히 1시간 주기는 5, 정확히 하루 주기는 0이다.
+- 현황 자료를 정확히 1시간 주기로 갱신하면 5, 하루 주기 이상은 0이다. 예보·가격처럼 현황이 아닌 값은 주기가 1시간 미만이어도 5다.
 - job tag는 그 job의 launchpad 수동 실행·재실행·backfill run에도 상속된다 — 실시간 job을 손으로 다시 돌린 run도 10이다.
   이것은 받아들인다(같은 일을 하는 run이다). 일괄 backfill을 낮게 돌리려면 별도 job으로 만든다.
 - UI의 asset Materialize(`__ASSET_JOB`)는 job 정의 tag를 받지 않아 0이다.
