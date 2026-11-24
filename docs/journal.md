@@ -1,3 +1,50 @@
+## 2026-11-24 — 공용 Dagster 런타임: nofile·launch 재시도·StartRun 예산·SKIPPED 보존·odroid 로그 수준(수집 실패 감사 §4 3·4·7·8·16)
+
+근거는 Map 저장소 `docs/reports/2026-11-23-collection-failure-audit.md`. 사실은 n150·odroid 읽기 전용 조회와 Dagster 1.13.24·
+dagster-postgres 0.29.24·dagster-webserver 1.13.24 원문으로 다시 확인했다.
+
+- **nofile(완화, 근본 해결 아님)**: 두 호스트의 Dagster 컨테이너가 전부 soft 1024/hard 524288이었다(`ulimit -Sn/-Hn`,
+  `HostConfig.Ulimits` 비어 있음). n150 fd 고갈은 평소 부족이 아니라 PinVi·Concierge code-server의 일회성 누수 두 건(각 55·100시간
+  지속, 평소 fd 13~21개)이다. `x-dagster-nofile`(soft 8192·hard 65536 — 누수를 오래 숨기지 않게 보수적으로)을 daemon·webserver·
+  공용 plane code-server 다섯(concierge·map·pinvi·geo·weather)에 붙였다. gateway(nginx)와 storage migrate one-shot은 뺐다. 누수
+  원인은 PinVi·Concierge 쪽이, 프로세스별 fd 비율 경보는 경보 작업이 맡는다.
+- **launch 재시도**: `run_queue.max_user_code_failure_retries` 3 → 10(간격 60초 그대로, 창 약 10분 ≥ code-server `start_period`
+  600초). 재제출은 code-server가 정말 닿지 않을 때만 안전하다(아래 중복 기동) — 횟수는 그 위험을 늘리지 않는다(첫 재제출에서 갈린다). Dagster는 `DagsterUserCodeUnreachableError`·`DagsterCodeLocationLoadError`만 이 경로로 되넣고, 그새 run이 STARTED로
+  넘어갔으면 되넣지 않는다(`queued_run_coordinator_daemon._dequeue_run`). 재시도 대기 동안 그 location의 dequeue 전체가 쉰다.
+- **StartRun 예산**: daemon `DAGSTER_GRPC_TIMEOUT_SECONDS` 60 → 360, code-server proxy 300. 함정 — `code-server start`의 proxy는
+  StartRun을 자식에 **자기** `DAGSTER_GRPC_TIMEOUT_SECONDS`(없으면 60)로 넘긴다(`proxy_server.StartRun`). daemon만 올리면 proxy가
+  60초에 먼저 끊고 daemon은 gRPC `UNKNOWN`을 받는다 — odroid가 정확히 그 모양이다(daemon 360·geo 300인데 weather·transport proxy는
+  기본 60). 자식의 StartRun은 run 프로세스 spawn 뒤 그 안의 dagster import·instance·run 조회가 끝나야 답한다
+  (`_grpc/impl._run_in_subprocess`; definitions 적재는 그 뒤). 시작 감시(600)는 `STARTING`부터 세므로 StartRun(≤300)과
+  definitions 적재가 함께 그 안에 들어야 한다. root `.env.example`의 옛 `=60` 두 줄을 비웠다(복사되면 daemon < proxy가 된다).
+- **중복 기동(부모 검증, odroid 14일 "밖에서 실패" 52건 + transport `CollectionLeaseLost` 38건)**: run `30c6e83e` — StartRun이 끊기자
+  queue가 재제출(남은 3→2→1)했는데 자식은 이미 run 프로세스를 띄웠다. 재제출마다 프로세스가 더 뜨고, 중복이 "Ignoring a duplicate
+  run"으로 exit 0 하자 code server의 `_check_for_orphaned_runs`(run_id당 **마지막** 프로세스만 추적)가 "unexpectedly exited with
+  code 0"으로 run을 FAILURE 처리했다. 원래 프로세스는 step을 성공한 뒤 lease를 잃었다. Dagster 1.13.24 `run_queue` 설정
+  (`dequeue_interval_seconds`·`dequeue_use_threads`·`dequeue_num_workers`·`max_user_code_failure_retries`·
+  `user_code_failure_retry_delay`·`block_op_concurrency_limited_runs`)에는 재제출 전 떠 있는 프로세스를 확인하는 것이 없다. 그래서
+  방어는 예산이다 — proxy 300 < daemon 360 < 시작 감시 600(odroid host compose가 이미 쓰던 daemon 360·geo 300과 같다). 일반 예산을
+  따라 오르는 schedule·sensor(60)·repository(180)·shutdown 유예(60)는 오늘 값으로 못박았다. 대가: 느린 StartRun 하나가 dequeue 루프
+  (`dequeue_use_threads` 기본 false)를 최대 360초 붙잡는다.
+- **tick 보존**: `retention`은 이미 있었다(14/7/14/14/30일). n150 `job_ticks` 46.9만 행 중 35.6만이 **보존 기간 안의** sensor
+  SKIPPED(하루 약 5만)라 1.09 GB는 보존 누락이 아니라 SKIPPED 양이다 — SKIPPED 7 → 2일. 기간을 넘긴 약 7.4만 행은 Dagster가
+  안 지운다: purge는 RUNNING instigator가 **자기** tick만 다음 tick에서 지운다(`_scheduler/scheduler.py`·`_daemon/sensor.py`) —
+  STOPPED·DECLARED_IN_CODE(workspace 밖)·instigator 행 없는 selector의 tick이다. event_logs(2.0 GB)·runs는 Dagster 설정으로 줄지
+  않는다(run 삭제가 필요 — 소유자 결정, `docs/tasks.md`).
+- **odroid 로그 수준**: registry odroid의 `dagster_python_log_level: WARNING`(2026-10-26 보존)을 지웠다 — 기본 INFO(#550)를 따른다.
+- **location 상한**: map·pinvi 10 > 전역 6은 무는 일이 없다는 주석만 달았다. 숫자는 테넌트 정책이라 그대로다(기존 테스트가 결박).
+  공정성 상한·`dagster/priority`는 제안으로 남긴다.
+- **storage 연결 풀(감사 §4 8)은 이 저장소 설정으로 못 고친다.** dagster-postgres 0.29.24의 `pg_config()`에는 pool 키가 없다
+  (`postgres_url`·`postgres_db`·`auth_provider`·`should_autocreate_tables`뿐). daemon의 QueuePool 2+2·대기 1초·recycle 3600·pre-ping은
+  Common `kortravelcommon/_daemon_pool_plugin.py`의 상수다. webserver는 `optimize_for_webserver`(pool_size 1 고정, CLI
+  `--db-pool-recycle`·`--db-pool-max-overflow`·`--db-statement-timeout`만, pre-ping 없음). 고치려면 Common 변경 → wheel vendor →
+  host 이미지 tag가 필요하다.
+- **docker 로그 회전**: Manager compose는 이미 상시 서비스 전부에 50 MB×5다(ADR-61). n150 gateway(10-27 생성)와 odroid 전부가 상한이
+  없는 것은 재생성·host compose 문제다 — 배포 메모.
+- 렌더 차이(n150·odroid 같은 모양): Dagster 7개 서비스에 `ulimits`, daemon gRPC 60 → 360, code-server 다섯에 gRPC 5개 env(proxy 300),
+  instance digest `efadc7be23984107` → `f2e05ba624b60652`. 나머지 서비스 무변화. odroid 파생 instance는 `eea24b35…` → `3cecfb0d…`(queue 10·
+  SKIPPED 2·INFO 세 줄).
+
 ## 2026-11-24 — @kor-travel/ui 0.2.6·tokens 0.1.7 채택(선택 칸 터치·아코디언 outline·Dialog 긴 제목)
 
 - common #83(05d7f91: md 미만 VirtualTable 선택 칸 44×44, AccordionContent `overflow-clip`+clip-margin 4px, 닫기 버튼이 있는 Dialog 제목 `pr-7`)과 #84(309b881: catalog 동결) release pack(artifact 14803131043, run 45141922011, SHA256SUMS·SRI 일치)을 vendor·원장·lock·정책 `uses/common-ref`·출처 문서에 반영했다. toast 0.1.6은 쓰지 않는다. tgz package.json 차이는 version과 ui peer(tokens 0.1.7)뿐이라 lock은 두 항목만 바뀐다.

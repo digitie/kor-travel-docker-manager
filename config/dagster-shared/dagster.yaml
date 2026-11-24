@@ -71,6 +71,12 @@ concurrency:
       # location 이름), 3단계의 공용 `workspace.yaml`은 그 이름을 `location_name`으로 준다(합류 조건).
       # `backend/tests/test_dagster_shared_config.py`가 compose의 code-server와 이 목록을 대조하고,
       # `test_dagster_shared_storage_integration.py`가 실제 queue daemon의 dequeue로 상한이 무는지 본다.
+      #
+      # 전역보다 큰 상한(n150 기준 map·pinvi 10 > 6)은 **오늘 무는 일이 없다** — dequeue는 전역과 tag 상한을
+      # 함께 보므로 실효 상한은 둘 중 작은 값이다(2026-11-23 수집 실패 감사 §1.4). 숫자는 테넌트 정책으로 그대로
+      # 둔다: 전역에 맞춰 낮추면 전역을 다시 올릴 때 테넌트 몫이 조용히 바뀐다
+      # (`test_global_dispatch_budget_preserves_independent_tag_caps`). 한 테넌트가 전역 슬롯을 다 쓰지 못하게 하는
+      # 공정성 상한(예: Map 4)과 `dagster/priority` 관례는 소유자 결정으로 따로 둔다(`docs/tasks.md`).
       - key: dagster/code_location
         value: kortravelmap.dagster.definitions
         limit: 10
@@ -136,7 +142,16 @@ concurrency:
 run_queue:
   # 신규 dispatch 확인 빈도만 줄인다. scheduler·sensor 평가 주기는 보존한다.
   dequeue_interval_seconds: 30
-  max_user_code_failure_retries: 3
+  # code-server에 닿지 못한 launch(`DagsterUserCodeUnreachableError`)를 다시 queue에 넣는 횟수와 간격이다.
+  # 3회 × 60초는 code-server가 재시작·fd 고갈·IO 정체로 3분 넘게 못 받으면 run을 메시지 없이 FAILURE로 끝냈다
+  # (2026-11-23 감사 §1.3 P0 — n150 14일 실패 2,314건 중 1,888건). 10회 × 60초 = 약 10분이면 code-server의
+  # 냉기동(재구축 실측 4분 55초)을 넘긴다.
+  # ⚠️ 재제출은 code-server가 **정말 닿지 않을 때만** 안전하다. StartRun이 예산을 넘겨 끊겼는데 자식이 run 프로세스를 이미
+  # 띄웠다면 재제출이 같은 run을 또 띄우고, 중복의 exit 0이 원래 run을 FAILURE로 만든다(odroid run `30c6e83e`). Dagster
+  # 1.13.24에는 재제출 전에 떠 있는 프로세스를 확인하는 설정이 없다 — 방어는 compose의 StartRun 예산(proxy 300 < daemon
+  # 360, `x-dagster-code-server-rpc-env`)이다. 실패 여부는 첫 재제출에서 갈리지만, 재제출마다 중복 프로세스가 하나씩
+  # 더 뜰 수 있다 — 예산이 그 경로 자체를 막는 것이 전제다.
+  max_user_code_failure_retries: 10
   user_code_failure_retry_delay: 60
 
 # Map의 값이다(가장 촘촘한 polling). 전역 상한과 다른 테넌트는 자기 job에
@@ -173,12 +188,18 @@ sensors:
 # **tick만 지운다.** Dagster의 `retention`은 schedule·sensor tick 보존만 다룬다 — run·event_log에는
 # 보존 설정이 없어 `dagster_shared`의 runs·event_logs는 지우지 않는 한 계속 자란다(네 테넌트가
 # 한 DB에 쌓는다). 정리는 별도 과제이고, 그때까지 크기는 백업 manifest의 `db_size_bytes`로 본다.
+#
+# sensor SKIPPED는 2일이다(옛 7일). n150 `job_ticks` 46.9만 행 중 35.6만이 보존 기간 안의 sensor SKIPPED였다
+# (2026-11-23 실측, 하루 약 5만 — 60초 tick sensor 여럿). SKIPPED는 "할 일 없음" 기록이라 어제까지 보이면 진단에
+# 충분하다. 정리 DELETE의 수는 그대로다(보존 일수별 하나씩, 인덱스는 `docs/dagster-tick-index.md`).
+# Dagster는 **RUNNING instigator의 tick만** 그 instigator의 다음 tick에서 지운다 — 멈췄거나 workspace에서 빠진
+# instigator의 옛 tick(n150 약 7.4만 행)은 이 설정으로 지워지지 않는다(`docs/tasks.md`).
 retention:
   schedule:
     purge_after_days: 14
   sensor:
     purge_after_days:
-      skipped: 7
+      skipped: 2
       success: 14
       started: 14
       failure: 30

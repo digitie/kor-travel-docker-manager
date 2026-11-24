@@ -209,6 +209,41 @@ x-logging: &default-logging
     max-size: "50m"
     max-file: "5"
 
+# 공용 Dagster runtime(daemon·webserver·code-server)의 열린 파일 상한 — 정의는 여기 하나다. Docker 기본은 soft 1024·
+# hard 524288이고 Dagster 프로세스는 soft를 올리지 않는다. n150에서 launch가 `[Errno 24] Too many open files`로
+# 실패했다(2026-11-23 수집 실패 감사 §1.2 — 14일 1,888건). 원인은 평소 부족이 아니라 PinVi·Concierge code-server의
+# 일회성 fd 누수 두 건(각 55·100시간 지속, 평소 fd 13~21개)이다. 그래서 이것은 **근본 해결이 아니라 완화**다 — 누수가
+# 실패로 번질 때까지의 시간을 늘리고 정상 운영 여유를 준다. 누수를 오래 숨기지 않게 보수적으로 soft 8192·hard 65536이다.
+# 누수 원인은 각 테넌트가, 프로세스별 fd 비율 경보는 경보 작업이 맡는다. 빠진 서비스는
+# `backend/tests/test_dagster_runtime_limits.py`가 렌더된 모델에서 찾는다. 다음 재생성 때 적용된다.
+x-dagster-nofile: &dagster-nofile
+  nofile:
+    soft: 8192
+    hard: 65536
+
+# 공용 plane code-server(`dagster code-server start`)의 proxy RPC 예산 — map·pinvi·concierge·weather가 병합한다(geo는
+# 자기 변수로 같은 값을 준다). daemon의 StartRun은 proxy를 거쳐 자식에 닿고, proxy는 그것을 **자기**
+# `DAGSTER_GRPC_TIMEOUT_SECONDS`(없으면 60)로 넘긴다(Dagster 1.13.24 `proxy_server.StartRun`) — daemon 예산만 올리면 proxy가
+# 먼저 끊고 daemon은 gRPC `UNKNOWN`("Could not reach user code server")을 받는다. 자식의 StartRun은 run 프로세스를 spawn하고
+# 그 안에서 dagster import·instance 열기·run 조회가 끝나야 답한다(`_grpc/impl._run_in_subprocess`; definitions 적재는 그 뒤
+# `core_execute_run`). CPU·IO 포화 때 이것만으로 60초를 넘는다(odroid run worker 기동 p50 30초, step worker 2분 33초).
+#
+# **예산이 짧으면 run이 둘로 뜬다.** 끊긴 StartRun을 daemon은 `DagsterUserCodeUnreachableError`로 보고 queue에 되넣는데,
+# 그새 자식은 run 프로세스를 이미 띄웠다. 재제출마다 프로세스가 더 뜨고, 늦게 뜬 쪽이 "Ignoring a duplicate run"으로 exit 0
+# 하면 code server가 그 run을 "unexpectedly exited with code 0"으로 FAILURE 처리한다(`server._check_for_orphaned_runs`는
+# run_id당 마지막 프로세스만 추적한다) — 원래 프로세스는 계속 돌다 lease를 잃는다(odroid run `30c6e83e`, 14일 52+38건).
+# Dagster 1.13.24 `run_queue`에는 재제출 전에 떠 있는 run 프로세스를 확인하는 설정이 없다. 그래서 방어는 예산이다:
+# proxy 300 < daemon 360 < 시작 감시 600(감시는 `STARTING`부터 세므로 StartRun과 그 뒤 definitions 적재가 함께 600 안에
+# 든다). 대가: 느린 StartRun 하나가 dequeue 루프(`dequeue_use_threads` 기본 false)를 그 시간만큼 붙잡고, 그 동안 queue daemon
+# heartbeat가 늦어 liveness(유예 300)가 잠깐 실패할 수 있다(경보만, 자동 재시작 없음). 일반 예산을 올리면 schedule·sensor·shutdown 유예의 기본값도 따라 오르므로 그 넷은 오늘 값으로
+# 못박는다.
+x-dagster-code-server-rpc-env: &dagster-code-server-rpc-env
+  DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_CODE_SERVER_DAGSTER_GRPC_TIMEOUT_SECONDS:-300}
+  DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS: "60"
+  DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
+  DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
+  DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
+
 services:
   # platform-topology.md §7(2026-09-19 결정)의 공용 제어 평면 instance. concierge·geo·
   # PinVi·weather·transport가 여기 산다 — 프로젝트마다 role+database만 만드는 별도
@@ -890,6 +925,7 @@ services:
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *dagster-nofile
     # healthcheck·exec의 고아를 거둔다(ADR-52와 같은 이유).
     init: true
     # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
@@ -916,8 +952,10 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
-      # StartRun RPC: 외부 daemon 예산은 Geo proxy보다 크고 시작 감시 상한보다 짧게 둔다.
-      DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_DAGSTER_GRPC_TIMEOUT_SECONDS:-60}
+      # StartRun RPC: 외부 daemon 예산은 code-server proxy(300)보다 크고 시작 감시 상한(600)보다 짧게 둔다. 60초는 IO
+      # 정체로 늦게 뜬 run worker를 실패로 기록하고 그 run은 실제로 돌았다(2026-11-23 감사 §1.3, run `6167d3a0`). 왜 짧으면
+      # run이 둘로 뜨는지는 `x-dagster-code-server-rpc-env` 주석. odroid host compose가 이미 쓰던 360과 같다.
+      DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_DAGSTER_GRPC_TIMEOUT_SECONDS:-360}
       # 일반 RPC 예산 변경이 별도 제한의 기본값까지 늘리지 않게 명시한다.
       DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS: "60"
       DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
@@ -928,7 +966,7 @@ services:
       # `x-` 키로 두지 않은 것은 `compose config` 렌더가 그 키를 그대로 내보내 n150 렌더가 한 줄 늘기 때문이다 — 여기 두면
       # 렌더는 종전과 byte 같다. 파일을 바꾸면 이 값을 함께 바꾼다(`test_workspace_digest_validate.py`가 대조한다).
       # 이 서비스를 alias 사용처(`*dagster-instance-digest`)보다 아래로 옮기지 말 것 — YAML은 정의 전 alias를 거부한다.
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "${KTDM_DAGSTER_INSTANCE_DIGEST:-efadc7be23984107}"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "${KTDM_DAGSTER_INSTANCE_DIGEST:-f2e05ba624b60652}"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
@@ -979,6 +1017,7 @@ services:
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *dagster-nofile
     init: true
     # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
     oom_score_adj: -600
@@ -1420,6 +1459,7 @@ services:
     cpus: 2
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *dagster-nofile
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - dagster
@@ -1439,7 +1479,7 @@ services:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      <<: *dagster-shared-control-env
+      <<: [*dagster-shared-control-env, *dagster-code-server-rpc-env]
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
@@ -1860,6 +1900,7 @@ services:
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-map-dagster-code-server-latest}
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *dagster-nofile
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -1879,7 +1920,7 @@ services:
       # 옛 metadata DB의 storage migrate(`kor-travel-map-dagster-storage-migrate`)는 4단계(platform-topology.md
       # §7)에서 지웠다 — 그 DB는 막힌 뒤 DROP되고, 되돌리기는 지원하지 않는다(소유자 결정). Map 이미지의
       # `dagster-entrypoint.sh`·`runtime_preflight`는 그 env를 읽지 않는다(`KOR_TRAVEL_MAP_PG_DSN`만 요구한다).
-      <<: *dagster-shared-control-env
+      <<: [*dagster-shared-control-env, *dagster-code-server-rpc-env]
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
       # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
@@ -2328,6 +2369,7 @@ services:
     container_name: ${PINVI_DAGSTER_CODE_SERVER_CONTAINER:-pinvi-dagster-code-server-latest}
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *dagster-nofile
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2363,7 +2405,7 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `PINVI_DAGSTER_PG_URL`(옛
       # `pinvi_dagster`)은 4단계(platform-topology.md §7)에서 지웠다 — 이미지에 구운 `apps/etl/dagster.yaml`만 그것을
       # 읽고, 그 파일은 아래 마운트가 가린다.
-      <<: *dagster-shared-control-env
+      <<: [*dagster-shared-control-env, *dagster-code-server-rpc-env]
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
       # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
@@ -2665,6 +2707,7 @@ services:
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-geo-dagster-code-server-latest}
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *dagster-nofile
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2706,8 +2749,9 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      # StartRun RPC: 외부 daemon 예산은 Geo proxy보다 크고 시작 감시 상한보다 짧게 둔다.
-      DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_GEO_DAGSTER_GRPC_TIMEOUT_SECONDS:-60}
+      # StartRun RPC: proxy가 자식에 넘기는 예산이다. 외부 daemon 예산(360)보다 작고 시작 감시 상한보다 짧게 둔다
+      # (`x-dagster-code-server-rpc-env` 주석). odroid host compose가 이미 쓰던 300과 같다.
+      DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_GEO_DAGSTER_GRPC_TIMEOUT_SECONDS:-300}
       # 일반 RPC 예산 변경이 별도 제한의 기본값까지 늘리지 않게 명시한다.
       DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS: "60"
       DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
@@ -3084,6 +3128,7 @@ services:
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-weather-dagster-code-server-latest}
     restart: unless-stopped
     logging: *default-logging
+    ulimits: *dagster-nofile
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -3120,7 +3165,7 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `DAGSTER_POSTGRES_URL`(옛
       # `kor_travel_weather_dagster`)은 4단계(platform-topology.md §7)에서 지웠다 — weather의 `deploy/dagster.yaml`만
       # 그것을 읽고, 이 컨테이너는 그 파일 대신 공용 정의를 붙인다.
-      <<: *dagster-shared-control-env
+      <<: [*dagster-shared-control-env, *dagster-code-server-rpc-env]
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
       # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,

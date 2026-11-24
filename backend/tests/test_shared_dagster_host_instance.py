@@ -457,7 +457,8 @@ def test_committed_odroid_tunings_are_explicit_and_n150_inherits(host):
     _, _, targets, selected, _ = host
     committed = yaml.safe_load((ROOT / "config/docker-targets.yml").read_bytes())["hosts"]
     assert committed["odroid"]["dagster_tag_concurrency_limits"] == _PRESERVED_TAG_LIMITS
-    assert committed["odroid"]["dagster_python_log_level"] == "WARNING"
+    # 로그 수준은 두 호스트 모두 기본(INFO, #550)을 따른다 — odroid의 옛 WARNING은 진행 로그를 버렸다(감사 §2.6 7).
+    assert "dagster_python_log_level" not in committed["odroid"]
     assert "dagster_tag_concurrency_limits" not in committed["n150"]
     assert "dagster_python_log_level" not in committed["n150"]
     config = {"version": 2, "hosts": deepcopy(committed)}
