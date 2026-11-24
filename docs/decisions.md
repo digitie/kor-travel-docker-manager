@@ -1959,10 +1959,12 @@ Manager backend(systemd `ktdm-backend`)의 백그라운드 루프가 자기 호�
 
 ### 결과(부정)·잃는 것
 
-- 외부로 아무도 깨우지 않는다 — 소유자가 발송 채널을 정하기 전에는 화면·로그를 봐야 안다.
+- ~~외부로 아무도 깨우지 않는다.~~ 2026-11-24 Telegram 발송(위험 즉시·주의 하루 1회 요약) — plane-watchdog.md §7.
 - 모든 instigator를 사람이 끈 location은 lookback(24시간) 동안 정지 경보가 날 수 있다(DB status를 믿지 않기 때문).
 - odroid처럼 CPU가 포화한 호스트에서는 기동 직후 질의가 수십 초 걸린다(statement_timeout 60초 안).
-- code-server 자동 재시작은 하지 않는다(제안 문구만). 넣으려면 C6c 경계와 함께 소유자 결정이 필요하다.
+- ~~code-server 자동 재시작은 하지 않는다(제안 문구만).~~ 2026-11-24 소유자 승인으로 좁은 조건에서만 한다(grpc fd ≥90% 또는 launch 연속
+  실패, 그 location 실행 중 run 0, 컨테이너당 6시간 1회, n150만, 정식 `control_container` 경로 = C6c host lock 비대기) —
+  [plane-watchdog.md §9](plane-watchdog.md#9-code-server-자동-재시작소유자-승인-2026-11-24--제한적).
 
 ### 후속
 

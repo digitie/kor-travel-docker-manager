@@ -80,7 +80,7 @@ def test_config_rejects_unknown_and_missing_keys(config):
     document = json.loads(json.dumps({
         "version": 1, "interval_seconds": 120, "storage": dict(config.storage),
         "rules": {name: dict(value) for name, value in config.rules.items()},
-        "diagnostics": dict(config.diagnostics), "notifiers": {name: dict(item) for name, item in config.notifiers.items()},
+        "diagnostics": dict(config.diagnostics), "notifiers": {name: dict(item) for name, item in config.notifiers.items()}, "auto_restart": dict(config.auto_restart),
     }))
     wd.parse_config(document)
     document["rules"]["io_pressure"]["typo"] = 1
@@ -230,7 +230,7 @@ def test_pinvi_launch_failure_streak_fires_on_fifth_launch_failure(config):
     assert findings[0].evidence["first_failure_at"].startswith("2026-11-13T19:40")
     # 재시작은 제안만 한다 — 대상 컨테이너가 문구에 있다.
     assert "docker restart pinvi-dagster-code-server-latest" in findings[0].detail
-    assert "자동 재시작 없음" in findings[0].detail
+    assert "자동 재시작은 조건이 맞을 때만" in findings[0].detail
 
 
 def test_plane_wide_launch_rate_is_diluted_early_which_is_why_the_streak_rule_exists(config):
@@ -803,7 +803,7 @@ def test_analytics_refresh_config_is_validated(config, key, value, message):
     document = json.loads(json.dumps({
         "version": 1, "interval_seconds": 120, "storage": dict(config.storage),
         "rules": {name: dict(item) for name, item in config.rules.items()},
-        "diagnostics": dict(config.diagnostics), "notifiers": {name: dict(item) for name, item in config.notifiers.items()},
+        "diagnostics": dict(config.diagnostics), "notifiers": {name: dict(item) for name, item in config.notifiers.items()}, "auto_restart": dict(config.auto_restart),
     }))
     document["rules"]["analytics_refresh_lag"][key] = value
     with pytest.raises(wd.ConfigError, match=message):

@@ -233,6 +233,15 @@ SELECT coalesce(jsonb_agg(x ORDER BY x.created DESC), '[]'::jsonb) FROM (
 """
 
 
+# location 하나의 실행 중 run 수(자동 재시작 직전 1회). `idx_run_range(status, …)`의 status 앞부분 — 실행 중 run은 몇 개뿐이다.
+_RUNNING_RUNS_SQL = """
+SELECT jsonb_build_object('running', count(*)) FROM runs r
+WHERE r.status IN ('STARTING', 'STARTED', 'CANCELING')
+  AND EXISTS (SELECT 1 FROM run_tags t WHERE t.run_id = r.run_id
+                AND t.key = 'dagster/code_location' AND t.value = :'location');
+"""
+
+
 @dataclass(frozen=True)
 class StorageTarget:
     container: str
@@ -337,6 +346,14 @@ class StorageClient:
             if key in result and record.location == key[0]:
                 result[key].append(record)
         return result
+
+    def running_runs(self, location: str) -> int:
+        """그 location의 실행 중(STARTING·STARTED·CANCELING) run 수."""
+
+        result = self.query_json(_RUNNING_RUNS_SQL, {"location": location})
+        if not isinstance(result, dict) or not isinstance(result.get("running"), int):
+            raise ProbeError("실행 중 run 질의 결과의 모양이 예상과 다릅니다.")
+        return int(result["running"])
 
     def tagged_job_runs(
         self, location: str, job: str, tag_key: str, *, since: float, limit: int

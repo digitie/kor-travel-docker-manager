@@ -57,8 +57,7 @@ healthcheck는 healthy였다(평소 fd 13~24개).
 n150 PinVi 사건의 sensor tick 오류에는 "Too many open files" 문구가 없고 code-server 단절만 남았다(11-14 tick_body 실측) — 그래서
 단절 문구도 제안 대상이다.
 
-**자동 재시작은 구현하지 않았다.** 운영 runtime 변경은 C6c 경계(pinned workflow·host lock) 밖에서 일반 경로로 하지 않는다는
-현행 계약과 충돌하고, 잘못된 재시작은 진행 중 run을 잃게 한다. 넣으려면 소유자 결정이 먼저다(§7).
+자동 재시작은 소유자가 좁은 조건에서만 허용했다(2026-11-24) — §9. 그 밖의 경우는 위 제안 문구대로 사람이 한다.
 
 ### 3.2 공항 통계 사전집계 갱신(`analytics_refresh_lag`)
 
@@ -191,3 +190,26 @@ PinVi launch 연속 실패(11-13 19:57 발화), PinVi sensor tick 연속 실패(
 40개(11-24 01:21~07:26Z, 실물 간격)에 시나리오 태그를 덧씌워 재생한다(#283 태그는 추출 시점 배포 전): 한 번 튄 delayed 무시 → delayed
 2회 주의 → stale 1회는 아직 주의 → 태그 없는 FAILURE 건너뜀 → stale 2회 위험 → 태그 없는 SUCCESS로 해소, n150 해당 없음.
 화면은 `frontend/e2e/plane-alerts.spec.ts`.
+
+## 9. code-server 자동 재시작(소유자 승인 2026-11-24 — 제한적)
+
+n150 PinVi(11-13~16)·concierge(11-14~18) 사건은 code-server 안 `dagster api grpc` 프로세스가 fd를 다 써서 55·100시간 동안 모든 launch와
+sensor가 실패했고, 사람이 재시작할 때까지 풀리지 않았다. 소유자는 아래 조건에서만 Manager가 스스로 재시작하도록 허용했다
+(`services/plane_watchdog_restart.py`, 설정 `auto_restart`, 값의 정본은 `config/plane-watchdog.yml`).
+
+- **계기**: 그 code-server 컨테이너의 grpc 프로세스 fd 비율 ≥ `fd_ratio`(`dagster_fd_usage` 경보의 evidence), 또는 `on_launch_failure_streak`이면
+  그 location의 `launch_failure_streak` 경보(횟수는 그 규칙의 `count`). code-server 부모 프로세스·daemon·webserver의 fd는 계기가 아니다.
+- **조건**: 이 호스트가 `hosts`에 있다(기본 n150) · 그 location에 실행 중 run(STARTING·STARTED·CANCELING)이 **0**(storage 읽기 전용 질의,
+  확인하지 못하면 하지 않는다) · 같은 컨테이너의 마지막 **시도**가 `min_interval_hours`(6시간)보다 오래됐다.
+- **한도**: 시도 시각을 재시작 **전에** 상태 파일(`TRUSTED_STATE_ROOT` 아래 `plane-watchdog/auto-restart-state.json`, 0600)에 남긴다 —
+  실패도 한 번으로 세고(재시도 폭주 없음), Manager가 재시작해도 한도가 유지된다. 기록을 남기지 못하면 재시작하지 않는다. 한 번에 하나만 돈다.
+- **경로(C6c 경계 안)**: 화면의 재시작 단추와 같은 정식 수명주기 경로 `docker_service.control_container(<registry id>, "restart")`만 쓴다.
+  Manager compose 컨테이너(n150 code-server 다섯)면 그 경로가 C6c host lock을 **비대기**로 잡고(배포·다른 mutation이 돌고 있으면
+  `ManagerMutationActiveError` — 아무것도 바꾸지 않는다) lock snapshot·Manager mutation 환경 계약을 대조한다. registry가 관리하지 않거나
+  role이 code-server가 아닌 컨테이너는 거부한다. 별도의 재시작 경로·`docker restart` 직접 호출은 없다. 컨테이너 자신의 stop grace를 쓴다.
+- **진단**: 재시작 직전과 `post_restart_capture_seconds` 뒤에 그 컨테이너의 fd 내역 진단(§5.1과 같은 수집)을 남긴다.
+- **알림**: 결과(완료·실패와 오류, 계기, 진단 디렉터리)를 Telegram으로 바로 보내고(억제 없음 — 횟수는 6시간 한도가 묶는다) 로그 WARNING
+  `PLANE AUTO-RESTART`, 화면 수집 경보 패널의 "자동 재시작" 줄·기록·보류 사유에 남긴다.
+- **odroid**: 기본 꺼짐(`hosts`에 없음). odroid의 code-server는 host compose(`/opt/kor-travel-odroid`)라 registry·C6c 경로가 n150과 다를 수 있다 —
+  odroid에서 켜려면 그 호스트의 `control_container` 경로를 확인한 뒤 `hosts`에 더한다(Codex).
+

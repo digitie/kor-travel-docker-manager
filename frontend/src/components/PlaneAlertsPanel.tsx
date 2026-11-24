@@ -123,6 +123,47 @@ function Disclosure({ label, children }: { label: string; children: ReactNode })
   );
 }
 
+function autoRestartText(state: PlaneAlertsResponse['auto_restart']): string {
+  if (!state) return '';
+  if (!state.enabled) return 'code-server 자동 재시작은 꺼져 있습니다.';
+  if (!state.active_on_host) return `code-server 자동 재시작은 이 호스트에서 쓰지 않습니다(대상: ${state.hosts.join(', ')}).`;
+  return `code-server 자동 재시작: ${state.policy}.`;
+}
+
+function AutoRestarts({ state }: { state: PlaneAlertsResponse['auto_restart'] }) {
+  if (!state) return null;
+  const recent = state.recent ?? [];
+  return (
+    <>
+      <p className="text-xs text-secondary" data-testid="plane-alerts-auto-restart">{autoRestartText(state)}</p>
+      {recent.length > 0 ? (
+        <ul aria-label="자동 재시작 기록" className="space-y-1">
+          {recent.map((item) => (
+            <li
+              className={`text-xs break-words ${item.success ? 'text-secondary' : 'text-danger'}`}
+              data-success={item.success}
+              key={`${item.container}-${item.at}`}
+            >
+              {`${formatKst(item.at)} · ${item.container} 재시작 ${item.success ? '완료' : '실패'} — ${item.reason}`}
+              {item.error ? ` · 오류: ${item.error}` : ''}
+              {item.diagnostics?.before ? ` · 진단 ${item.diagnostics.before}` : ''}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {state.skipped.length > 0 ? (
+        <Disclosure label={`자동 재시작 보류 ${state.skipped.length}건`}>
+          <ul aria-label="자동 재시작 보류 사유" className="mt-2 space-y-1">
+            {state.skipped.map((note) => (
+              <li className="text-xs text-secondary break-words" key={note}>{note}</li>
+            ))}
+          </ul>
+        </Disclosure>
+      ) : null}
+    </>
+  );
+}
+
 function Details({ data }: { data: PlaneAlertsResponse | undefined }) {
   const checks = data?.checks ?? [];
   const captures = data?.diagnostics ?? [];
@@ -184,6 +225,7 @@ function Body({ data }: { data: PlaneAlertsResponse | undefined }) {
       <p className="text-xs text-secondary" data-testid="plane-alerts-delivery">
         {deliveryText(data?.notifiers ?? [])}
       </p>
+      <AutoRestarts state={data?.auto_restart} />
       <Details data={data} />
     </>
   );

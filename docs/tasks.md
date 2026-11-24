@@ -28,7 +28,9 @@
 - [x] 외부 발송 채널 = Telegram(PinVi 시스템 봇 토큰 재사용): 위험 즉시·주의 하루 1회 요약·반복 억제·해소 1회.
 - [ ] 소유자: 두 호스트 Manager root `.env`에 `KTDM_ALERT_TELEGRAM_CHAT_ID`(그리고 odroid에는 `PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`도 — odroid
   root `.env`에 있는지 Codex가 이름으로만 확인). 넣은 뒤 첫 위험 경보·09시 요약 수신 확인.
-- [ ] 소유자 결정: code-server 자동 재시작 허용 여부.
+- [x] code-server 자동 재시작(소유자 승인, 제한적: grpc fd ≥90%·launch 연속 실패, 실행 중 run 0, 6시간 1회, n150만, C6c 정식 경로).
+- [ ] n150 설치 뒤: 화면 "자동 재시작" 줄이 "grpc fd ≥ 90% …"로 보이는지. 첫 실제 재시작 때 C6c 경로 통과·전후 진단·Telegram 수신 확인.
+- [ ] odroid 자동 재시작: host compose code-server에 `control_container` 경로가 맞는지 확인 뒤 `auto_restart.hosts`에 추가(Codex).
 - [x] transport 공항 통계 사전집계 갱신 지연 규칙 `analytics_refresh_lag`(run 태그 `kortravel/analytics-refresh`, 소스·단위·e2e 시험).
 - [ ] odroid Manager 배포(Codex) + transport #283 배포 뒤 첫 평가: odroid 점검 항목 "공항 통계 사전집계 갱신"이 정상(태그 없음), n150은 해당 없음.
 - [ ] (선택) 심각도 상승(주의→위험)도 webhook 전이로 보낼지 — 지금은 firing·resolved만 보낸다. 발송 채널 결정 때 함께.

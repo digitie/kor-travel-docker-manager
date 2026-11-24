@@ -450,6 +450,25 @@ export type PlaneAlertsResponse = {
     disabled_reason?: string | null;
   }[];
   diagnostics: { location: string; directory?: string; captured_at?: string; py_spy?: string; error?: string }[];
+  /** code-server 자동 재시작(소유자 승인, 제한적). 옛 backend는 싣지 않는다. */
+  auto_restart?: {
+    enabled: boolean;
+    active_on_host: boolean;
+    hosts: string[];
+    policy: string;
+    recent: {
+      container: string;
+      location: string;
+      rule: string;
+      reason: string;
+      at: string | null;
+      finished_at?: string | null;
+      success: boolean;
+      error: string | null;
+      diagnostics: { before?: string | null; after?: string | null };
+    }[];
+    skipped: string[];
+  };
 };
 
 export type DiskUsageRow = {
