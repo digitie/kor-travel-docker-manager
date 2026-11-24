@@ -14,7 +14,9 @@ dagster-postgres 0.29.24·dagster-webserver 1.13.24 원문으로 다시 확인�
 - **StartRun 예산**: daemon `DAGSTER_GRPC_TIMEOUT_SECONDS` 60 → 360, code-server proxy 300. 함정 — `code-server start`의 proxy는
   StartRun을 자식에 **자기** `DAGSTER_GRPC_TIMEOUT_SECONDS`(없으면 60)로 넘긴다(`proxy_server.StartRun`). daemon만 올리면 proxy가
   60초에 먼저 끊고 daemon은 gRPC `UNKNOWN`을 받는다 — odroid가 정확히 그 모양이다(daemon 360·geo 300인데 weather·transport proxy는
-  기본 60). 자식의 StartRun은 run 프로세스 spawn·definitions 재import 뒤에야 답한다(`_grpc/impl._run_in_subprocess`).
+  기본 60). 자식의 StartRun은 run 프로세스 spawn 뒤 그 안의 dagster import·instance·run 조회가 끝나야 답한다
+  (`_grpc/impl._run_in_subprocess`; definitions 적재는 그 뒤). 시작 감시(600)는 `STARTING`부터 세므로 StartRun(≤300)과
+  definitions 적재가 함께 그 안에 들어야 한다. root `.env.example`의 옛 `=60` 두 줄을 비웠다(복사되면 daemon < proxy가 된다).
 - **중복 기동(부모 검증, odroid 14일 "밖에서 실패" 52건 + transport `CollectionLeaseLost` 38건)**: run `30c6e83e` — StartRun이 끊기자
   queue가 재제출(남은 3→2→1)했는데 자식은 이미 run 프로세스를 띄웠다. 재제출마다 프로세스가 더 뜨고, 중복이 "Ignoring a duplicate
   run"으로 exit 0 하자 code server의 `_check_for_orphaned_runs`(run_id당 **마지막** 프로세스만 추적)가 "unexpectedly exited with
@@ -40,7 +42,7 @@ dagster-postgres 0.29.24·dagster-webserver 1.13.24 원문으로 다시 확인�
 - **docker 로그 회전**: Manager compose는 이미 상시 서비스 전부에 50 MB×5다(ADR-61). n150 gateway(10-27 생성)와 odroid 전부가 상한이
   없는 것은 재생성·host compose 문제다 — 배포 메모.
 - 렌더 차이(n150·odroid 같은 모양): Dagster 7개 서비스에 `ulimits`, daemon gRPC 60 → 360, code-server 다섯에 gRPC 5개 env(proxy 300),
-  instance digest `efadc7be23984107` → `fc5252cf72557356`. 나머지 서비스 무변화. odroid 파생 instance는 `eea24b35…` → `3cecfb0d…`(queue 10·
+  instance digest `efadc7be23984107` → `f2e05ba624b60652`. 나머지 서비스 무변화. odroid 파생 instance는 `eea24b35…` → `3cecfb0d…`(queue 10·
   SKIPPED 2·INFO 세 줄).
 ## 2026-11-24 — @kor-travel/ui 0.2.6·tokens 0.1.7 채택(선택 칸 터치·아코디언 outline·Dialog 긴 제목)
 

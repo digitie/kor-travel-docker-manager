@@ -2,6 +2,8 @@
 
 - [x] nofile soft 8192·hard 65536(daemon·webserver·code-server 다섯 — 누수 완화, 원인은 PinVi·Concierge, fd 경보는 경보 작업), run queue launch 재시도 10회×60초, StartRun 예산 proxy 300 < daemon 360(짧으면 재제출이 run을 중복 기동),
   sensor SKIPPED 보존 2일, odroid 로그 수준 INFO(#550 수렴). 테스트 `test_dagster_runtime_limits.py`.
+- [ ] ⚠️ RPC 예산은 compose에서 다시 만드는 경로로만 들어간다 — 서비스 후보 경로(`apply-core-candidate`)는 실행 중 env를
+  보존한다. 그 경로로 code-server를 바꾸면 proxy가 옛 60에 남는다(daemon 360 > proxy 60이라 무해하지 않다 — 중복 기동).
 - [ ] **n150 적용**: 설치 → `pin rebind-execution` → `pin verify` 0 → 다음 pinned 재구축 또는 `dagster-plane converge`(+ concierge·
   geo·weather는 각 경로). instance digest가 바뀌어 daemon·webserver·Map·PinVi·Concierge code-server가 다시 만들어진다.
 - [ ] **odroid 적용(Codex)**: Manager main 설치 → `dagster-instance-config prepare/show`(새 파생 `3cecfb0d…`) → host compose

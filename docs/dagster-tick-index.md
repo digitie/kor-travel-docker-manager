@@ -33,7 +33,7 @@ tick 보존 정리를 위한 것이다. daemon은 instigator의 tick이 끝날 �
   범위가 된다. 최신 tick 조회(`ORDER BY timestamp DESC LIMIT`)는 그대로 `ktdm_job_ticks_latest_timestamp`를 쓴다.
   인덱스 크기 33~39 MB, tmpfs 빌드 2~4초.
 - 대안으로 sensor 보존을 일수 하나(예: 모든 status 14일)로 줄여도 정상 상태 비용은 같게 사라진다(재현 0.022 ms) — 범위
-  안의 행이 전부 지울 행이 되기 때문이다. 그러나 보존 의미(SKIPPED 7일·FAILURE 30일)가 바뀌고, `dagster.yaml`
+  안의 행이 전부 지울 행이 되기 때문이다. 그러나 보존 의미(당시 SKIPPED 7일·FAILURE 30일, 2026-11-24부터 SKIPPED 2일)가 바뀌고, `dagster.yaml`
   digest가 모든 테넌트 code-server env에 실려 있어 그 변경은 테넌트마다 재생성을 부른다. 그래서 의미를 바꾸지 않는
   인덱스로 했다.
 

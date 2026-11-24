@@ -332,9 +332,13 @@ Dagster 1.13.24의 StartRun은 daemon→proxy와 proxy→API child 양쪽의 일
 제한 시간 만료를 미실행으로 간주해 같은 run을 무조건 재전송하지 않는다.
 
 `KTDM_DAGSTER_GRPC_TIMEOUT_SECONDS`는 daemon의 외부 RPC,
-`KTDM_GEO_DAGSTER_GRPC_TIMEOUT_SECONDS`는 Geo proxy의 내부 RPC다. 기본값은 기존 60초다.
-ARM64의 측정된 기동 지연을 수용하는 설정 예시는 내부 300초·외부 360초이며,
-기존 `run_monitoring.start_timeout_seconds=600` 아래에 전달 여유를 남긴다.
+`KTDM_GEO_DAGSTER_GRPC_TIMEOUT_SECONDS`는 Geo proxy의, `KTDM_CODE_SERVER_DAGSTER_GRPC_TIMEOUT_SECONDS`는 나머지
+code-server(map·pinvi·concierge·weather) proxy의 내부 RPC다. 기본값은 2026-11-24부터 외부 360초·내부 300초다(옛 60초는
+odroid run 중복 기동의 원인이었다 — 수집 실패 감사, `x-dagster-code-server-rpc-env` 주석). 내부 < 외부 <
+`run_monitoring.start_timeout_seconds=600`을 지킨다. 시작 감시는 `STARTING`부터 세므로 StartRun(최대 300초)과 그 뒤
+definitions 적재가 함께 600초 안에 들어야 한다. root `.env`에 옛 예시의 `=60`이 남아 있으면 지운다.
+⚠️ 서비스 후보 적용 경로(`apply-core-candidate` 등)는 실행 중 컨테이너의 env를 보존한다 — 이 예산은 compose에서 다시
+만드는 경로(pinned 재구축·`activate-concierge`·host compose 재생성)로만 들어간다.
 이는 성공 보장치가 아니므로 실제 새 run의 큐 통과와 성공 종료를 확인한다.
 
 일반 RPC 설정은 StartRun 전용이 아니다. 공유 daemon의 다른 일반 RPC도 영향을 받는다.

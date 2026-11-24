@@ -149,7 +149,8 @@ run_queue:
   # ⚠️ 재제출은 code-server가 **정말 닿지 않을 때만** 안전하다. StartRun이 예산을 넘겨 끊겼는데 자식이 run 프로세스를 이미
   # 띄웠다면 재제출이 같은 run을 또 띄우고, 중복의 exit 0이 원래 run을 FAILURE로 만든다(odroid run `30c6e83e`). Dagster
   # 1.13.24에는 재제출 전에 떠 있는 프로세스를 확인하는 설정이 없다 — 방어는 compose의 StartRun 예산(proxy 300 < daemon
-  # 360, `x-dagster-code-server-rpc-env`)이다. 횟수를 올려도 이 위험은 늘지 않는다(첫 재제출에서 이미 갈린다).
+  # 360, `x-dagster-code-server-rpc-env`)이다. 실패 여부는 첫 재제출에서 갈리지만, 재제출마다 중복 프로세스가 하나씩
+  # 더 뜰 수 있다 — 예산이 그 경로 자체를 막는 것이 전제다.
   max_user_code_failure_retries: 10
   user_code_failure_retry_delay: 60
 

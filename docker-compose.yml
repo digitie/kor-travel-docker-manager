@@ -225,16 +225,17 @@ x-dagster-nofile: &dagster-nofile
 # 자기 변수로 같은 값을 준다). daemon의 StartRun은 proxy를 거쳐 자식에 닿고, proxy는 그것을 **자기**
 # `DAGSTER_GRPC_TIMEOUT_SECONDS`(없으면 60)로 넘긴다(Dagster 1.13.24 `proxy_server.StartRun`) — daemon 예산만 올리면 proxy가
 # 먼저 끊고 daemon은 gRPC `UNKNOWN`("Could not reach user code server")을 받는다. 자식의 StartRun은 run 프로세스를 spawn하고
-# definitions를 다시 import한 뒤에야 답한다(`_grpc/impl._run_in_subprocess`) — 부하 때 수 분이다(n150 code-server 냉기동
-# import 4분 55초, odroid step worker 기동 2분 33초).
+# 그 안에서 dagster import·instance 열기·run 조회가 끝나야 답한다(`_grpc/impl._run_in_subprocess`; definitions 적재는 그 뒤
+# `core_execute_run`). CPU·IO 포화 때 이것만으로 60초를 넘는다(odroid run worker 기동 p50 30초, step worker 2분 33초).
 #
 # **예산이 짧으면 run이 둘로 뜬다.** 끊긴 StartRun을 daemon은 `DagsterUserCodeUnreachableError`로 보고 queue에 되넣는데,
 # 그새 자식은 run 프로세스를 이미 띄웠다. 재제출마다 프로세스가 더 뜨고, 늦게 뜬 쪽이 "Ignoring a duplicate run"으로 exit 0
 # 하면 code server가 그 run을 "unexpectedly exited with code 0"으로 FAILURE 처리한다(`server._check_for_orphaned_runs`는
 # run_id당 마지막 프로세스만 추적한다) — 원래 프로세스는 계속 돌다 lease를 잃는다(odroid run `30c6e83e`, 14일 52+38건).
 # Dagster 1.13.24 `run_queue`에는 재제출 전에 떠 있는 run 프로세스를 확인하는 설정이 없다. 그래서 방어는 예산이다:
-# proxy 300 < daemon 360 < 시작 감시 600. 대가는 느린 StartRun 하나가 dequeue 루프(`dequeue_use_threads` 기본 false)를 그
-# 시간만큼 붙잡는 것이다. 일반 예산을 올리면 schedule·sensor·shutdown 유예의 기본값도 따라 오르므로 그 넷은 오늘 값으로
+# proxy 300 < daemon 360 < 시작 감시 600(감시는 `STARTING`부터 세므로 StartRun과 그 뒤 definitions 적재가 함께 600 안에
+# 든다). 대가: 느린 StartRun 하나가 dequeue 루프(`dequeue_use_threads` 기본 false)를 그 시간만큼 붙잡고, 그 동안 queue daemon
+# heartbeat가 늦어 liveness(유예 300)가 잠깐 실패할 수 있다(경보만, 자동 재시작 없음). 일반 예산을 올리면 schedule·sensor·shutdown 유예의 기본값도 따라 오르므로 그 넷은 오늘 값으로
 # 못박는다.
 x-dagster-code-server-rpc-env: &dagster-code-server-rpc-env
   DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_CODE_SERVER_DAGSTER_GRPC_TIMEOUT_SECONDS:-300}
@@ -965,7 +966,7 @@ services:
       # `x-` 키로 두지 않은 것은 `compose config` 렌더가 그 키를 그대로 내보내 n150 렌더가 한 줄 늘기 때문이다 — 여기 두면
       # 렌더는 종전과 byte 같다. 파일을 바꾸면 이 값을 함께 바꾼다(`test_workspace_digest_validate.py`가 대조한다).
       # 이 서비스를 alias 사용처(`*dagster-instance-digest`)보다 아래로 옮기지 말 것 — YAML은 정의 전 alias를 거부한다.
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "${KTDM_DAGSTER_INSTANCE_DIGEST:-fc5252cf72557356}"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "${KTDM_DAGSTER_INSTANCE_DIGEST:-f2e05ba624b60652}"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
