@@ -78,6 +78,23 @@ rules:
     min_failures: 5
     min_ratio: 0.2
 
+  # transport 공항 통계 사전집계(대시보드 묶음) 갱신 지연. transport #283이 공항 수집 run마다 사전집계 상태를
+  # 판정해, 경보면 그 run에 태그 `kortravel/analytics-refresh=<상태>`를 단다(run은 SUCCESS 그대로). 상태 기준은
+  # transport가 정본이다(미반영 적재 15분+ delayed, 40분+ 또는 사전집계 2시간+ stale, 사전집계 없음 missing) —
+  # 여기서는 심각도 대응과 연속 횟수만 정한다. 태그 없이 SUCCESS로 끝난 run이 연속을 끊는다.
+  # 공항 job은 실측 약 9분 간격(5분 cron, coalescing, run 3~12분; odroid 2026-11-24)이라 2회 연속은 첫 경보 태그
+  # 뒤 약 10분이다. 위험은 최근 consecutive_runs회가 모두 critical_values일 때만이다.
+  # active_hours 안에 끝난 그 job의 run이 없으면 "해당 없음"이다(n150 plane에는 transport가 없다).
+  analytics_refresh_lag:
+    enabled: true
+    location: kor-travel-transport
+    job: airport_collection_job
+    tag_key: kortravel/analytics-refresh
+    warning_values: [delayed]
+    critical_values: [stale, missing]
+    consecutive_runs: 2
+    active_hours: 2
+
   # 디스크 사용률(df의 Capacity와 같은 식). 경로를 비우면 Docker root, 공용 PostgreSQL 데이터
   # mount, `/`를 자동으로 본다. 감사: 두 호스트 모두 11월에 한 번씩 가득 찼다(n150 83%·odroid 82%).
   disk_usage:

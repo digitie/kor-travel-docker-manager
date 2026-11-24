@@ -64,6 +64,14 @@ class RunRecord:
     never_started: bool
 
 
+@dataclass(frozen=True)
+class TaggedRun:
+    """종료 run 하나와 그 run에 붙은 태그 하나의 값(없으면 ``None``)."""
+
+    record: RunRecord
+    tag: str | None
+
+
 def _number(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -197,6 +205,26 @@ SELECT coalesce(jsonb_agg(x), '[]'::jsonb) FROM (
 # location 거르기를 EXISTS 대신 바깥에서 한다. odroid에서 EXISTS가 location tag 1.5만 행의 semi-join으로
 # 풀려 22.6초가 걸렸다(2026-11-24 EXPLAIN, load 23). 위 모양은 job 인덱스 역방향 30행만 읽는다.
 
+# job 하나의 최근 종료 run과 그 run의 태그 하나(매 평가). 위와 같은 모양 — job의 최근 종료 run 30행을 읽고
+# location은 바깥에서 거른다. 2026-11-24 실측: odroid(transport 공항 job이 9분마다 돈다) `runs_pkey` 역방향
+# 71행 69 ms, n150(그 job이 10-14 이후 없음) `idx_runs_by_job` 역방향 0.2 ms.
+_TAGGED_JOB_RUNS_SQL = f"""
+SELECT coalesce(jsonb_agg(x ORDER BY x.created DESC), '[]'::jsonb) FROM (
+  SELECT c.* FROM (
+    SELECT {_RUN_COLUMNS},
+      (SELECT t.value FROM run_tags t WHERE t.run_id = r.run_id
+         AND t.key = :'tag_key' LIMIT 1) AS tag_value
+    FROM runs r
+    WHERE r.pipeline_name = :'job'
+      AND r.status IN ('SUCCESS', 'FAILURE', 'CANCELED')
+    ORDER BY r.id DESC
+    LIMIT 30
+  ) c
+  WHERE c.location = :'location'
+  LIMIT :limit
+) x;
+"""
+
 
 @dataclass(frozen=True)
 class StorageTarget:
@@ -302,6 +330,18 @@ class StorageClient:
             if key in result and record.location == key[0]:
                 result[key].append(record)
         return result
+
+    def tagged_job_runs(self, location: str, job: str, tag_key: str, *, limit: int) -> list[TaggedRun]:
+        """(location, job)의 최근 종료 run(최신 먼저)과 각 run의 ``tag_key`` 태그 값."""
+
+        rows = self.query_json(_TAGGED_JOB_RUNS_SQL, {
+            "location": location, "job": job, "tag_key": tag_key, "limit": str(int(limit))})
+
+        def convert(row: Mapping[str, Any]) -> TaggedRun:
+            tag = row.get("tag_value")
+            return TaggedRun(record=run_from_row(row), tag=tag if isinstance(tag, str) and tag else None)
+
+        return [item for item in _rows(rows, convert) if item.record.location == location]
 
 
 def _rows(rows: Any, convert: Callable[[Mapping[str, Any]], Any]) -> list[Any]:
@@ -556,6 +596,7 @@ __all__ = [
     "ProbeError",
     "RunRecord",
     "StorageClient",
+    "TaggedRun",
     "container_processes",
     "dagster_containers",
     "default_disk_paths",

@@ -1,3 +1,17 @@
+## 2026-11-24 — 수집 경보: transport 공항 통계 사전집계 갱신 지연(`analytics_refresh_lag`)
+
+- 소유자 결정: transport #283(`8041dfd`)이 남기는 공항 사전집계 갱신 지연 신호를 Manager 수집 경보(ADR-64)의 규칙으로 울린다.
+  delayed=주의, stale·missing=위험, 연속 N회로 오탐 억제, 임계는 `config/plane-watchdog.yml`.
+- 자료로 run 태그 `kortravel/analytics-refresh`를 골랐다(providers API `airport_analytics_cache.alerting`이 아니라). 이미 쓰는 읽기 전용
+  storage 경로(`docker exec … psql`, `BEGIN READ ONLY`, 비밀번호·DSN 없음) 안에 있고, 형제 서비스 HTTP 경로·포트에 새로 기대지 않으며,
+  판정은 transport가 run 시점에 한 그대로다. job이 멈추면 태그도 멈추지만 그건 tick 정지·주기 내 성공 없음이 울린다.
+- 연속: 최신 run부터 태그 있는 run을 세고, 태그 없는 SUCCESS가 끊고 태그 없는 FAILURE·CANCELED는 건너뛴다. 심각도는 최근 N회(기본 2) 중
+  가장 낮은 것. 공항 job 실측 간격 약 9분(odroid 11-24)이라 2회는 첫 경보 태그 뒤 약 10분이다.
+- 실측(읽기 전용, 2026-11-24): odroid 질의 69 ms, 태그 0건(#283 미배포), location 태그 값 `kor-travel-transport`. n150 storage에는 공항
+  job의 10-14 이전 run만 3,268건 — `active_hours`(2시간) 안 run이 없어 "해당 없음"이고 경보가 나지 않는다.
+- 시험: `backend/tests/test_plane_watchdog.py`(odroid 공항 run 40개 fixture 위 시나리오 재생·설정 검증·질의 실패 격리·질의 모양),
+  `frontend/src/components/PlaneAlertsPanel.test.tsx`, `frontend/e2e/plane-alerts.spec.ts`(주의 경보·n150 해당 없음). [자세히](plane-watchdog.md#32-공항-통계-사전집계-갱신analytics_refresh_lag)
+
 ## 2026-11-24 — 공용 Dagster 런타임: nofile·launch 재시도·StartRun 예산·SKIPPED 보존·odroid 로그 수준(수집 실패 감사 §4 3·4·7·8·16)
 
 근거는 Map 저장소 `docs/reports/2026-11-23-collection-failure-audit.md`. 사실은 n150·odroid 읽기 전용 조회와 Dagster 1.13.24·

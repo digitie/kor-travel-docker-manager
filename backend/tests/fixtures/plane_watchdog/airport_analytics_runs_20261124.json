@@ -1,0 +1,407 @@
+{
+ "_source": "odroid dagster_shared runs, airport_collection_job(kor-travel-transport), 종료 run create 2026-11-24 01:21~07:26Z (2026-11-24 읽기 전용 추출). transport #283(kortravel/analytics-refresh 태그)은 아직 배포 전이라 태그는 없다 — 시험이 시나리오 태그를 덧씌운다.",
+ "location": "kor-travel-transport",
+ "job": "airport_collection_job",
+ "runs": [
+  {
+   "job": "airport_collection_job",
+   "run_id": "37eef7bd-437a-4737-83b2-b54aafb4b04e",
+   "status": "SUCCESS",
+   "created": 1795485662.689505,
+   "updated": 1795486151.224577,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "d31dcb79-ace2-4a4b-be2a-bfe5a2aa771d",
+   "status": "SUCCESS",
+   "created": 1795486264.997413,
+   "updated": 1795486957.52168,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "cfa77e8a-5420-41cb-85f1-4aa53075487d",
+   "status": "SUCCESS",
+   "created": 1795487166.504865,
+   "updated": 1795487626.550929,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "2bd9d87b-0cac-4c03-b619-3248a91cb24f",
+   "status": "SUCCESS",
+   "created": 1795487764.839021,
+   "updated": 1795488123.096107,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "5d07635f-50df-41ff-85ea-d009384fbc08",
+   "status": "SUCCESS",
+   "created": 1795488361.882245,
+   "updated": 1795488759.70052,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "af8b8987-1180-40ee-ade4-09b52ee1f59a",
+   "status": "SUCCESS",
+   "created": 1795488961.166643,
+   "updated": 1795489305.836702,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "fb724c2f-0ce1-426a-b805-84bf1c03c0db",
+   "status": "SUCCESS",
+   "created": 1795489562.233992,
+   "updated": 1795489908.03724,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "71b76f06-4d69-4d0e-91d1-27639b72f70d",
+   "status": "SUCCESS",
+   "created": 1795490161.892615,
+   "updated": 1795490505.64951,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "d82558b4-8330-4c5a-9573-b8a45eaf1d93",
+   "status": "SUCCESS",
+   "created": 1795490761.492822,
+   "updated": 1795491106.048142,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "df2772f0-dd5a-422e-9195-90452740b5aa",
+   "status": "SUCCESS",
+   "created": 1795491361.410743,
+   "updated": 1795491612.251651,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "ee1b0569-c82c-4a37-b9ff-e030fd9276cb",
+   "status": "SUCCESS",
+   "created": 1795491661.882416,
+   "updated": 1795492010.699251,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "52c1a0f5-7866-4fe4-8399-4bbba948f839",
+   "status": "SUCCESS",
+   "created": 1795492260.557245,
+   "updated": 1795492435.679299,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "29deb43a-8a4f-4390-b3e0-4d6cbd68ee94",
+   "status": "SUCCESS",
+   "created": 1795492560.428101,
+   "updated": 1795492699.989128,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "7c6f6a7c-ece5-4165-b3ca-3060e718212e",
+   "status": "SUCCESS",
+   "created": 1795492862.052955,
+   "updated": 1795493163.454678,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "b29b7672-6780-4d17-82fc-c0e2e219f49b",
+   "status": "SUCCESS",
+   "created": 1795493461.907772,
+   "updated": 1795493763.282145,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "4f85dfbc-a587-44e5-b9c6-83155f143c9a",
+   "status": "SUCCESS",
+   "created": 1795494060.607014,
+   "updated": 1795494293.66773,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "52dfb797-0a0f-4240-913c-e7e29694ff3b",
+   "status": "SUCCESS",
+   "created": 1795494360.928068,
+   "updated": 1795494553.331353,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "0535520d-a46a-4930-86d1-bec7cdfc5c6c",
+   "status": "SUCCESS",
+   "created": 1795494661.225687,
+   "updated": 1795494855.188357,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "62e2e339-39d7-480c-a7b5-104b1b29a1f4",
+   "status": "SUCCESS",
+   "created": 1795494960.99821,
+   "updated": 1795495178.216845,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "41024803-907a-4a6d-97df-1345629b9b9f",
+   "status": "SUCCESS",
+   "created": 1795495261.105369,
+   "updated": 1795495648.250409,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "af2cf750-e9d0-4c83-b6e2-c0d085113028",
+   "status": "SUCCESS",
+   "created": 1795495860.735079,
+   "updated": 1795496086.949897,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "64364121-3166-4d3b-ade2-cbee6e5d421e",
+   "status": "SUCCESS",
+   "created": 1795496160.610104,
+   "updated": 1795496332.726748,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "818f103b-7455-474e-8dc7-745aebaad797",
+   "status": "SUCCESS",
+   "created": 1795496460.971257,
+   "updated": 1795496756.773078,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "c61943cf-5c40-4688-a847-f419648841e9",
+   "status": "SUCCESS",
+   "created": 1795496761.469559,
+   "updated": 1795497036.5944,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "9e793651-1cf6-4852-bbbb-9d596f1b615a",
+   "status": "SUCCESS",
+   "created": 1795497060.967109,
+   "updated": 1795497361.778074,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "4b36ff9e-3440-4fdb-9e70-49d394adc771",
+   "status": "SUCCESS",
+   "created": 1795497661.615448,
+   "updated": 1795497997.111259,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "1499828c-5f7b-4c66-bf97-edc0bfde851e",
+   "status": "SUCCESS",
+   "created": 1795498262.830291,
+   "updated": 1795498587.157094,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "c830c27a-42da-468a-91ae-74a11880e5a5",
+   "status": "SUCCESS",
+   "created": 1795498862.268121,
+   "updated": 1795499231.752662,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "f56d0f86-6af6-4a04-8307-afc51efad619",
+   "status": "SUCCESS",
+   "created": 1795499460.866208,
+   "updated": 1795499737.682842,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "3a0ded17-b002-4090-b1e2-01155dc25da4",
+   "status": "SUCCESS",
+   "created": 1795499760.683108,
+   "updated": 1795499994.287688,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "160b621f-559c-47f6-8680-649c7539d372",
+   "status": "SUCCESS",
+   "created": 1795500061.7838,
+   "updated": 1795500387.39969,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "9498de32-31da-4e18-a4b8-4bdced6004cf",
+   "status": "SUCCESS",
+   "created": 1795500660.896181,
+   "updated": 1795500920.96365,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "84e9ff59-e31b-4427-9828-b7ce4373c863",
+   "status": "SUCCESS",
+   "created": 1795500961.885856,
+   "updated": 1795501305.699679,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "e2f40207-294f-4924-9134-f43a9a2f1e5a",
+   "status": "SUCCESS",
+   "created": 1795501563.977683,
+   "updated": 1795501888.221313,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "ab264587-c07f-4354-81ea-84a4cb1efe17",
+   "status": "SUCCESS",
+   "created": 1795502161.641067,
+   "updated": 1795502572.160436,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "52192f6b-9330-44ed-b5a3-9dd05b8225b8",
+   "status": "SUCCESS",
+   "created": 1795502764.591502,
+   "updated": 1795503093.949051,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "81e04294-aaed-4551-9656-deed9836e65a",
+   "status": "SUCCESS",
+   "created": 1795503362.175848,
+   "updated": 1795503525.130019,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "8ac1dc42-e13a-46b0-8047-efb9dc8c1633",
+   "status": "SUCCESS",
+   "created": 1795503661.858327,
+   "updated": 1795504116.899526,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "5fbd238a-9838-4a3d-b3dd-4eff8f684670",
+   "status": "SUCCESS",
+   "created": 1795504261.078532,
+   "updated": 1795504980.371544,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  },
+  {
+   "job": "airport_collection_job",
+   "run_id": "0f88c218-bc52-4a0f-a442-0f1c89422166",
+   "status": "SUCCESS",
+   "created": 1795505161.263377,
+   "updated": 1795505670.072066,
+   "location": "kor-travel-transport",
+   "schedule": "airport_collection_job_schedule",
+   "never_started": false
+  }
+ ]
+}

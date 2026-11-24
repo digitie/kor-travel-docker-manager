@@ -10,6 +10,7 @@
 | schedule별 k주기 동안 SUCCESS 없음 | schedule tag가 붙은 종료 run + cron 주기 |
 | job별 연속 실패 N회 | 종료 run |
 | run launch 실패율 | 시작 없이 FAILURE가 된 run의 비율 |
+| 공항 통계 사전집계 갱신 지연 | transport 공항 수집 run의 `kortravel/analytics-refresh` 태그 |
 | 디스크 사용률·IO 압력(PSI) | statvfs·`/proc/pressure/io` |
 | Dagster 컨테이너 열린 fd / nofile 한도 | `/proc/<pid>/fd`·`limits` |
 | storage에 닿지 못함 | 위 질의의 연속 실패 |
@@ -50,6 +51,7 @@ from kor_travel_docker_manager.services.plane_watchdog_probe import (
     Instigator,
     ProbeError,
     RunRecord,
+    TaggedRun,
 )
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
@@ -67,12 +69,13 @@ RULE_LABELS: dict[str, str] = {
     "consecutive_failures": "job 연속 실패",
     "launch_failure_streak": "location launch 연속 실패",
     "launch_failure_rate": "run launch 실패율",
+    "analytics_refresh_lag": "공항 통계 사전집계 갱신",
     "disk_usage": "디스크 사용률",
     "io_pressure": "IO 압력(PSI)",
     "dagster_fd_usage": "Dagster 열린 fd",
 }
 _STORAGE_RULES = ("location_tick_stall", "schedule_no_success", "tick_failures", "consecutive_failures",
-                  "launch_failure_streak", "launch_failure_rate")
+                  "launch_failure_streak", "launch_failure_rate", "analytics_refresh_lag")
 _SEVERITIES = ("warning", "critical")
 _SENSOR_DEFAULT_INTERVAL_SECONDS = 30.0  # Dagster sensor의 기본 minimum_interval_seconds
 _RESOLVED_HISTORY = 50
@@ -82,6 +85,8 @@ _SCHEDULE_BACKFILL_LIMIT = 10
 #: 긴 창 schedule의 최근 run을 다시 읽는 간격. feed가 이보다 길게(_RETAIN_FEED_HOURS) 남으므로
 #: 두 자료의 합집합은 끊기지 않는다.
 _SCHEDULE_BACKFILL_REFRESH_SECONDS = 6 * 3600
+#: 사전집계 규칙이 연속 횟수 외에 더 읽는 run 수(태그 없는 실패 run을 건너뛰고도 연속을 셀 여유).
+_ANALYTICS_RUN_MARGIN = 8
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +122,9 @@ _RULE_KEYS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "launch_failure_streak": {"enabled": bool, "severity": str, "count": int, "active_hours": (int, float)},
     "launch_failure_rate": {"enabled": bool, "severity": str, "window_minutes": (int, float),
                             "min_failures": int, "min_ratio": (int, float)},
+    "analytics_refresh_lag": {"enabled": bool, "location": str, "job": str, "tag_key": str,
+                              "warning_values": list, "critical_values": list, "consecutive_runs": int,
+                              "active_hours": (int, float)},
     "disk_usage": {"enabled": bool, "warning_used_percent": (int, float),
                    "critical_used_percent": (int, float), "paths": list},
     "io_pressure": {"enabled": bool, "severity": str, "full_avg300_percent": (int, float),
@@ -154,6 +162,21 @@ def _check_mapping(value: Any, keys: Mapping[str, type | tuple[type, ...]], wher
     return dict(value)
 
 
+def _check_analytics_refresh(rule: Mapping[str, Any]) -> None:
+    where = "rules.analytics_refresh_lag"
+    for key in ("location", "job", "tag_key"):
+        if not str(rule[key]).strip():
+            raise ConfigError(f"{where}.{key}: 비울 수 없습니다")
+    for key in ("warning_values", "critical_values"):
+        values = rule[key]
+        if not values or not all(isinstance(value, str) and value.strip() for value in values):
+            raise ConfigError(f"{where}.{key}: 비어 있지 않은 문자열 목록이어야 합니다")
+    if set(rule["warning_values"]) & set(rule["critical_values"]):
+        raise ConfigError(f"{where}: warning_values와 critical_values가 겹칩니다")
+    if int(rule["consecutive_runs"]) < 1:
+        raise ConfigError(f"{where}.consecutive_runs: 1 이상이어야 합니다")
+
+
 def parse_config(document: Any) -> WatchdogConfig:
     if not isinstance(document, dict):
         raise ConfigError("최상위는 mapping이어야 합니다")
@@ -175,6 +198,7 @@ def parse_config(document: Any) -> WatchdogConfig:
         raise ConfigError("rules.disk_usage: warning이 critical보다 클 수 없습니다")
     if rules["dagster_fd_usage"]["warning_ratio"] > rules["dagster_fd_usage"]["critical_ratio"]:
         raise ConfigError("rules.dagster_fd_usage: warning이 critical보다 클 수 없습니다")
+    _check_analytics_refresh(rules["analytics_refresh_lag"])
     storage = _check_mapping(document["storage"], _SECTION_KEYS["storage"], "storage")
     diagnostics = _check_mapping(document["diagnostics"], _SECTION_KEYS["diagnostics"], "diagnostics")
     notifiers_raw = document["notifiers"]
@@ -553,6 +577,71 @@ def evaluate_launch_failures(feed: Sequence[RunRecord], now: float, rule: Mappin
     )]
 
 
+#: transport가 공항 수집 run 태그에 싣는 사전집계 상태(transport #283 `AnalyticsRefreshHealth`). 기준값은
+#: transport `app/services/analytics_cache.py`가 정본이다 — 여기 문구는 화면 설명일 뿐 판정에 쓰지 않는다.
+_ANALYTICS_STATUS_TEXT: dict[str, tuple[str, str]] = {
+    "delayed": ("갱신 지연",
+                "사전집계에 반영되지 않은 가장 오래된 적재가 15분을 넘었습니다. 대시보드는 아직 직전 사전집계를 냅니다"),
+    "stale": ("갱신 멈춤",
+              "대시보드가 원본 계산(ICN 25~30초, 504 위험)으로 떨어졌습니다 — 미반영 적재 40분 이상 또는 사전집계 2시간 초과"),
+    "missing": ("사전집계 없음", "관측은 15분 넘게 쌓였는데 기본 사전집계가 없습니다"),
+}
+
+
+def relevant_analytics_runs(runs: Sequence[TaggedRun], now: float, rule: Mapping[str, Any]) -> list[TaggedRun]:
+    """설정한 (location, job)의, ``active_hours`` 안에 끝난 종료 run(최신 먼저)."""
+
+    horizon = now - float(rule["active_hours"]) * 3600
+    picked = [item for item in runs
+              if item.record.location == rule["location"] and item.record.job == rule["job"]
+              and horizon <= item.record.updated <= now]
+    return sorted(picked, key=lambda item: (item.record.created, item.record.updated), reverse=True)
+
+
+def evaluate_analytics_refresh(runs: Sequence[TaggedRun], now: float, rule: Mapping[str, Any]) -> list[Finding]:
+    """transport 공항 수집 run의 사전집계 상태 태그가 최근 ``consecutive_runs``회 연속 경보인가.
+
+    transport는 판정이 경보(delayed·stale·missing)일 때만 자기 run에 태그를 달고, run은 SUCCESS로 둔다
+    (transport #283 — 부분 성공을 FAILURE로 올리는 소음을 피했다). 그래서:
+
+    - 태그 없이 SUCCESS로 끝난 run은 그 시점 판정이 정상(또는 판정 자체 실패)이므로 연속을 끊는다.
+    - 태그 없는 FAILURE·CANCELED run은 판정 자료가 아니라 건너뛴다 — 그 실패는 `consecutive_failures`·
+      `schedule_no_success`가 본다.
+    - 심각도는 연속 구간 최근 N회 중 **가장 낮은 것**: 위험은 최근 N회가 모두 위험 값일 때만. 한 번 튄 stale로
+      위험을 내지 않는다(오탐 억제).
+    - 설정에 없는 값은 주의로 센다(경보 태그를 모른다고 정상으로 읽지 않는다).
+    """
+
+    needed = int(rule["consecutive_runs"])
+    critical_values = set(rule["critical_values"])
+    streak: list[TaggedRun] = []
+    for item in relevant_analytics_runs(runs, now, rule):
+        if item.tag is not None:
+            streak.append(item)
+            continue
+        if item.record.status == "SUCCESS":
+            break
+    if len(streak) < needed:
+        return []
+    head = streak[:needed]
+    severity = "critical" if all(item.tag in critical_values for item in head) else "warning"
+    latest = streak[0]
+    label, meaning = _ANALYTICS_STATUS_TEXT.get(str(latest.tag), (str(latest.tag), "transport가 모르는 상태를 남겼습니다"))
+    location, job = str(rule["location"]), str(rule["job"])
+    return [Finding(
+        rule="analytics_refresh_lag", subject=f"{location}/{job}", severity=severity,
+        title=f"공항 통계 사전집계 {label}: {job} 최근 {len(streak)}회 연속({latest.tag})",
+        detail=(f"{meaning}. 공항 수집 run 자체는 SUCCESS일 수 있습니다 — 수집은 되는데 대시보드 묶음 갱신이 밀린 것입니다. "
+                f"transport 관리 화면 홈의 운영 상태(`/v1/transport/providers`의 `airport_analytics_cache`)와 run 로그의 "
+                f"`analytics_refresh_alert`(cache_refresh_failed·cache_refresh_skipped)를 확인하세요. "
+                f"run 태그 `{rule['tag_key']}`, 최근 run {latest.record.run_id}."),
+        evidence={"latest_status": latest.tag, "streak": len(streak),
+                  "statuses": [item.tag for item in streak[:10]],
+                  "latest_run_id": latest.record.run_id, "latest_at": _iso(latest.record.updated),
+                  "first_alert_at": _iso(streak[-1].record.updated)},
+    )]
+
+
 def evaluate_disks(observations: Sequence[DiskObservation], rule: Mapping[str, Any]) -> list[Finding]:
     findings = []
     for item in observations:
@@ -752,6 +841,7 @@ class Probes(Protocol):
     def instigators(self) -> list[Instigator]: ...
     def runs_since(self, since: float) -> list[RunRecord]: ...
     def schedule_runs(self, schedules: Sequence[tuple[str, str]]) -> dict[tuple[str, str], list[RunRecord]]: ...
+    def tagged_job_runs(self, location: str, job: str, tag_key: str, limit: int) -> list[TaggedRun]: ...
     def disks(self, paths: Sequence[str]) -> tuple[list[DiskObservation], list[str]]: ...
     def io_pressure(self) -> dict[str, dict[str, float]] | None: ...
     def dagster_fds(self) -> tuple[list[ContainerFds], list[str]]: ...
@@ -794,6 +884,9 @@ class HostProbes:
 
     def schedule_runs(self, schedules: Sequence[tuple[str, str]]) -> dict[tuple[str, str], list[RunRecord]]:
         return self._storage.schedule_runs(schedules, limit=_SCHEDULE_BACKFILL_LIMIT)
+
+    def tagged_job_runs(self, location: str, job: str, tag_key: str, limit: int) -> list[TaggedRun]:
+        return self._storage.tagged_job_runs(location, job, tag_key, limit=limit)
 
     def disks(self, paths: Sequence[str]) -> tuple[list[DiskObservation], list[str]]:
         return probe_module.read_disks(list(paths) or probe_module.default_disk_paths())
@@ -994,15 +1087,51 @@ class PlaneWatchdog:
                 feed, now, self.config.rule("launch_failure_streak"), containers),
             "launch_failure_rate": evaluate_launch_failures(feed, now, self.config.rule("launch_failure_rate")),
         }
+        if self.config.enabled("analytics_refresh_lag"):
+            produced["analytics_refresh_lag"] = self._analytics_round(now, checks)
         for rule in _STORAGE_RULES:
             if not self.config.enabled(rule):
                 checks[rule] = CheckState(rule, "disabled")
                 continue
-            observed.add(rule)
+            own = checks.get(rule)  # 규칙이 자기 점검 상태를 이미 적었다(사전집계 규칙).
+            if own is not None and own.state == "unavailable":
+                continue  # 측정 실패면 관측하지 않은 것으로 둔다 — 기존 경보는 그대로.
+            observed.add(rule)  # "해당 없음"도 관측이다 — 이 plane에 그 job이 없으면 남은 경보는 풀린다.
             findings.extend(produced[rule])
-            checks[rule] = CheckState(rule, "firing" if produced[rule] else "ok",
-                                      f"{len(produced[rule])}건" if produced[rule] else "")
+            if own is None:
+                checks[rule] = CheckState(rule, "firing" if produced[rule] else "ok",
+                                          f"{len(produced[rule])}건" if produced[rule] else "")
         return observed
+
+    def _analytics_round(self, now: float, checks: dict[str, CheckState]) -> list[Finding]:
+        """transport 공항 수집 run의 사전집계 태그. 이 질의만 실패하면 이 규칙만 "확인 불가"다.
+
+        판정할 run이 없으면(이 plane에 그 location이 없다 — n150) "해당 없음"이다. run은 있는데 `active_hours` 안에
+        끝난 것이 없을 때도 같다 — job이 멈춘 것은 `location_tick_stall`·`schedule_no_success`가 본다.
+        """
+
+        assert self.config is not None and self._probes is not None
+        rule = self.config.rule("analytics_refresh_lag")
+        name = "analytics_refresh_lag"
+        try:
+            runs = self._probes.tagged_job_runs(
+                str(rule["location"]), str(rule["job"]), str(rule["tag_key"]),
+                int(rule["consecutive_runs"]) + _ANALYTICS_RUN_MARGIN)
+        except ProbeError as exc:
+            checks[name] = CheckState(name, "unavailable", str(exc))
+            return []
+        relevant = relevant_analytics_runs(runs, now, rule)
+        if not relevant:
+            checks[name] = CheckState(
+                name, "not_applicable",
+                f"최근 {_human_duration(float(rule['active_hours']) * 3600)} 안에 끝난 "
+                f"{rule['location']}/{rule['job']} run이 없습니다")
+            return []
+        findings = evaluate_analytics_refresh(runs, now, rule)
+        latest = relevant[0]
+        state_text = f"최근 run {latest.tag or '정상(태그 없음)'} · {_iso(latest.record.updated)}"
+        checks[name] = CheckState(name, "firing" if findings else "ok", state_text)
+        return findings
 
     def _containers_by_location(self) -> dict[str, str]:
         return {location: item.container for item in self._fds for location in item.locations}
@@ -1284,6 +1413,7 @@ __all__ = [
     "RULE_LABELS",
     "WatchdogConfig",
     "WebhookNotifier",
+    "evaluate_analytics_refresh",
     "evaluate_consecutive_failures",
     "evaluate_disks",
     "evaluate_fds",

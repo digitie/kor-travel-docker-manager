@@ -206,8 +206,9 @@ export default function PlaneAlertsPanel() {
             수집 경보
           </h2>
           <p className="ops-section-copy">
-            공용 Dagster plane의 tick 정지, 주기 내 성공 없음, 연속 실패, launch 실패, 디스크·IO·fd를
-            Dagster 밖(Manager)에서 {data?.interval_seconds ?? '?'}초마다 평가합니다.{evaluationText(data)}
+            공용 Dagster plane의 tick 정지, 주기 내 성공 없음, 연속 실패, launch 실패, 공항 통계 사전집계 갱신
+            지연, 디스크·IO·fd를 Dagster 밖(Manager)에서 {data?.interval_seconds ?? '?'}초마다
+            평가합니다.{evaluationText(data)}
           </p>
         </div>
       </div>
