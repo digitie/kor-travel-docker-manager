@@ -44,6 +44,7 @@ dagster-postgres 0.29.24·dagster-webserver 1.13.24 원문으로 다시 확인�
 - 렌더 차이(n150·odroid 같은 모양): Dagster 7개 서비스에 `ulimits`, daemon gRPC 60 → 360, code-server 다섯에 gRPC 5개 env(proxy 300),
   instance digest `efadc7be23984107` → `f2e05ba624b60652`. 나머지 서비스 무변화. odroid 파생 instance는 `eea24b35…` → `3cecfb0d…`(queue 10·
   SKIPPED 2·INFO 세 줄).
+
 ## 2026-11-24 — @kor-travel/ui 0.2.6·tokens 0.1.7 채택(선택 칸 터치·아코디언 outline·Dialog 긴 제목)
 
 - common #83(05d7f91: md 미만 VirtualTable 선택 칸 44×44, AccordionContent `overflow-clip`+clip-margin 4px, 닫기 버튼이 있는 Dialog 제목 `pr-7`)과 #84(309b881: catalog 동결) release pack(artifact 14803131043, run 45141922011, SHA256SUMS·SRI 일치)을 vendor·원장·lock·정책 `uses/common-ref`·출처 문서에 반영했다. toast 0.1.6은 쓰지 않는다. tgz package.json 차이는 version과 ui peer(tokens 0.1.7)뿐이라 lock은 두 항목만 바뀐다.
