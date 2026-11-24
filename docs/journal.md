@@ -1,3 +1,15 @@
+## 2026-11-24 — 수집 경보 Telegram 발송(위험 즉시·주의 하루 1회 요약)
+
+- 소유자 결정: 외부 발송 채널은 Telegram 봇, 토큰은 PinVi 시스템 봇(`PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`, Manager root `.env`) 재사용.
+  받는 chat은 새 키 `KTDM_ALERT_TELEGRAM_CHAT_ID`(소유자가 넣는다; PinVi 운영 chat `PINVI_TELEGRAM_ADMIN_CHAT_ID`와 같은 값 또는 개인 chat),
+  비면 발송 비활성.
+- 규칙: 위험은 firing·escalated 때 바로, 같은 경보 6시간 안 반복 억제, 바로 알린 경보는 해소 1회. 주의는 매일 09시 KST 뒤 요약 한 통.
+  상태는 Manager 상태 root의 JSON(0600)이라 재시작에도 중복 발송하지 않는다.
+- 비밀: httpx가 INFO로 남기는 요청 URL에 토큰이 실린다(`/bot<토큰>/sendMessage`, 시험에서 실측) — httpx·httpcore 로거에 가리는 filter를 달았다.
+  예외 문구 대신 종류만, 상태 API에는 변수 이름만.
+- 화면: 수집 경보 패널의 발송 줄이 Telegram 발송 규칙·최근 실패·chat 미설정을 보인다.
+- 시험: `backend/tests/test_plane_watchdog_telegram.py`, `PlaneAlertsPanel.test.tsx`, `frontend/e2e/plane-alerts.spec.ts`. [자세히](plane-watchdog.md#7-발송--telegram소유자-결정-2026-11-24)
+
 ## 2026-11-24 — 수집 경보: transport 공항 통계 사전집계 갱신 지연(`analytics_refresh_lag`)
 
 - 소유자 결정: transport #283(`8041dfd`)이 남기는 공항 사전집계 갱신 지연 신호를 Manager 수집 경보(ADR-64)의 규칙으로 울린다.

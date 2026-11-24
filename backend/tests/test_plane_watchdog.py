@@ -80,7 +80,7 @@ def test_config_rejects_unknown_and_missing_keys(config):
     document = json.loads(json.dumps({
         "version": 1, "interval_seconds": 120, "storage": dict(config.storage),
         "rules": {name: dict(value) for name, value in config.rules.items()},
-        "diagnostics": dict(config.diagnostics), "notifiers": {"webhook": dict(config.notifiers["webhook"])},
+        "diagnostics": dict(config.diagnostics), "notifiers": {name: dict(item) for name, item in config.notifiers.items()},
     }))
     wd.parse_config(document)
     document["rules"]["io_pressure"]["typo"] = 1
@@ -803,7 +803,7 @@ def test_analytics_refresh_config_is_validated(config, key, value, message):
     document = json.loads(json.dumps({
         "version": 1, "interval_seconds": 120, "storage": dict(config.storage),
         "rules": {name: dict(item) for name, item in config.rules.items()},
-        "diagnostics": dict(config.diagnostics), "notifiers": {"webhook": dict(config.notifiers["webhook"])},
+        "diagnostics": dict(config.diagnostics), "notifiers": {name: dict(item) for name, item in config.notifiers.items()},
     }))
     document["rules"]["analytics_refresh_lag"][key] = value
     with pytest.raises(wd.ConfigError, match=message):

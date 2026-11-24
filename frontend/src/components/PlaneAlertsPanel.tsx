@@ -95,14 +95,23 @@ function Summary({ data }: { data: PlaneAlertsResponse | undefined }) {
   );
 }
 
+const NOTIFIER_NAME: Record<string, string> = { telegram: 'Telegram', webhook: 'webhook' };
+
 function deliveryText(notifiers: PlaneAlertsResponse['notifiers']): string {
   const delivering = notifiers.filter((notifier) => notifier.enabled);
   if (delivering.length === 0) {
-    return '외부 발송은 꺼져 있습니다 — 이 화면, 상태 API, Manager 로그로만 보입니다(발송 채널은 소유자 결정).';
+    const waiting = notifiers.find((notifier) => notifier.name === 'telegram');
+    const hint = waiting ? ` Telegram은 받는 chat(${waiting.url_env.split(' · ').pop()})이 비어 있어 보내지 않습니다.` : '';
+    return `외부 발송은 꺼져 있습니다 — 이 화면, 상태 API, Manager 로그로만 보입니다.${hint}`;
   }
-  const failures = delivering.map((notifier) => notifier.last_error).filter(Boolean);
-  const names = delivering.map((notifier) => notifier.name).join(', ');
-  return failures.length > 0 ? `외부 발송: ${names} (최근 실패: ${failures.join(', ')})` : `외부 발송: ${names}`;
+  return `외부 발송: ${delivering
+    .map((notifier) => {
+      const name = NOTIFIER_NAME[notifier.name] ?? notifier.name;
+      const policy = notifier.policy ? `(${notifier.policy})` : '';
+      const failure = notifier.last_error ? ` — 최근 실패 ${notifier.last_error}` : '';
+      return `${name}${policy}${failure}`;
+    })
+    .join(', ')}`;
 }
 
 function Disclosure({ label, children }: { label: string; children: ReactNode }) {

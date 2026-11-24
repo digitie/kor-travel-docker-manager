@@ -138,9 +138,23 @@ diagnostics:
   max_captures: 50
   log_tail_minutes: 60
 
-# 외부 발송. 기본은 꺼져 있다 — 화면 경보 패널·상태 API·Manager 로그(journald)가 기본 경로다.
-# 발송 채널은 소유자가 정한다(Resend 이메일 연동은 보류, #720).
+# 외부 발송. 화면 경보 패널·상태 API·Manager 로그(journald)는 늘 돈다. 외부 채널은 Telegram(소유자 결정 2026-11-24)이고,
+# 일반 webhook은 꺼 둔다(Resend 이메일 연동은 보류, #720).
 notifiers:
+  # Telegram 봇(소유자 결정 2026-11-24). 토큰은 PinVi 시스템 봇을 재사용한다 — Manager root `.env`의 token_env 변수를
+  # 읽기만 한다(복사·출력하지 않는다). 받는 chat은 chat_id_env 변수(root `.env`, 소유자가 넣는다 — PinVi 운영 알림 chat
+  # `PINVI_TELEGRAM_ADMIN_CHAT_ID`와 같은 값이나 소유자 개인 chat). 둘 중 하나라도 비면 보내지 않는다.
+  # 위험은 바로, 주의는 매일 digest_hour_kst 시 요약, 같은 경보는 repeat_suppress_minutes 안에 다시 보내지 않고, 바로
+  # 알린 위험 경보가 풀리면 해소를 한 번 보낸다. 대시보드 링크는 dashboard_url_env(비면 KTDM_FRONTEND_ORIGINS의 첫 https).
+  telegram:
+    enabled: true
+    token_env: PINVI_TELEGRAM_BOT_TOKEN_DEFAULT
+    chat_id_env: KTDM_ALERT_TELEGRAM_CHAT_ID
+    api_base: https://api.telegram.org
+    timeout_seconds: 5
+    digest_hour_kst: 9
+    repeat_suppress_minutes: 360
+    dashboard_url_env: KTDM_ALERT_DASHBOARD_URL
   webhook:
     enabled: false
     # URL은 비밀이므로 이 파일에 두지 않고 root `.env`의 이 변수에서 읽는다.

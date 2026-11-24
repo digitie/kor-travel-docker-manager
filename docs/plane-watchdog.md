@@ -145,15 +145,33 @@ PinVi·concierge fd 고갈은 재현되지 않아 원인이 미확정이다(가�
   `ktdm_dagster_container_open_fds`·`_open_fds_total`·`_nofile_soft_limit{container}`(fd 누수 추적),
   `ktdm_dagster_location_tick_age_seconds{location}`.
 
-## 7. 발송(소유자 결정 대기)
+## 7. 발송 — Telegram(소유자 결정 2026-11-24)
 
 Manager에는 기존 알림 발송 수단이 없다(Alertmanager는 두지 않기로 했다, ADR-58 결정 11 부근; Resend 이메일 연동은 소유자
-지시로 보류 #720). 그래서 기본 경로는 화면·상태 API·로그이고, 외부 발송은 **일반 webhook(JSON POST) 하나를 기본 꺼짐으로**
-둔다. 켜려면 `config/plane-watchdog.yml`의 `notifiers.webhook.enabled: true`와 root `.env`의 `KTDM_ALERT_WEBHOOK_URL`.
-전이(firing·escalated·resolved) 때만 보내고 같은 상태가 계속되면 다시 보내지 않는다. 실패는 재시도하지 않고 화면에 종류만 남긴다(URL은
-비밀이라 남기지 않는다).
+지시로 보류 #720). 화면·상태 API·로그는 늘 돈다. 외부 채널은 **Telegram 봇**이고 토큰은 **PinVi 시스템 봇을 재사용**한다
+(`services/plane_watchdog_telegram.py`, 설정 `notifiers.telegram`).
 
-소유자가 정할 것: 발송 채널(webhook 수신처·Telegram 등), code-server 자동 재시작 허용 여부.
+- **토큰**: Manager root `.env`의 `PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`(PinVi compose에 이미 넘기는 값)를 backend가 `load_dotenv`로 읽는다.
+  복사하지 않고, 화면·상태 API·로그·상태 파일에 내지 않는다. 토큰이 URL 경로에 들어가므로 httpx 예외 문구는 남기지 않고 종류만 남기며,
+  httpx가 INFO로 남기는 요청 URL(`/bot<토큰>/`)은 로그 filter가 가린다.
+- **받는 chat**: root `.env`의 `KTDM_ALERT_TELEGRAM_CHAT_ID`(소유자가 넣는다). PinVi 운영 알림 chat은 PinVi `.env`의
+  `PINVI_TELEGRAM_ADMIN_CHAT_ID`(PinVi `docs/integrations/telegram.md` §3)라 같은 값을 넣거나 소유자 개인 chat id를 넣는다. 토큰이나
+  chat id가 비면 보내지 않고 화면에 "chat이 비어 있어 보내지 않습니다"로 보인다.
+- **위험(critical)**: firing·escalated(주의→위험) 때 바로 보낸다. 바로 보낸 경보가 풀리면 해소를 한 번 보낸다.
+- **반복 억제**: 같은 경보 key를 `repeat_suppress_minutes`(기본 360분) 안에 다시 보내지 않는다 — 울렸다 풀렸다 하는 경보, Manager 재시작
+  직후 다시 울리는 경보. 억제한 재발화의 해소도 보내지 않는다(받는 사람이 마지막으로 안 것이 이미 "해소"다).
+- **주의(warning)**: 바로 보내지 않고 매일 KST `digest_hour_kst`(기본 09시) 뒤 첫 평가에서 요약 한 통 — 지난 요약 뒤 울린 주의, 지금
+  울리는 주의, 그사이 풀린 주의. 셋 다 없으면 보내지 않는다.
+- **메시지**: 일반 텍스트(parse_mode 없음). 호스트·규칙·대상(location 등)·제목(값)·상세(600자)·시작 시각(KST)·대시보드 링크
+  (`KTDM_ALERT_DASHBOARD_URL`, 비면 `KTDM_FRONTEND_ORIGINS`의 첫 https origin + `/#plane-alerts`).
+- **상태 파일**: 바로 보낸 key·요약 대기열·마지막 요약 날짜를 `/var/lib/kor-travel-docker-manager/plane-watchdog/telegram-state.json`
+  (0600)에 둔다 — 재시작해도 같은 위험 경보를 다시 보내지 않고 요약을 잃지 않는다. 깨졌으면 빈 상태로 시작한다.
+- 실패는 재시도하지 않고 화면에 종류(`HTTP 429` 등)만 남긴다.
+
+일반 webhook(JSON POST)은 그대로 두되 꺼져 있다(`notifiers.webhook.enabled: false`, `KTDM_ALERT_WEBHOOK_URL`). 켜면 전이(firing·escalated·
+resolved)마다 보낸다.
+
+소유자가 정할 것: `KTDM_ALERT_TELEGRAM_CHAT_ID` 값(두 호스트 root `.env`). code-server 자동 재시작은 §9.
 
 ## 8. 시험
 

@@ -443,6 +443,9 @@ export type PlaneAlertsResponse = {
     url_env: string;
     last_error: string | null;
     last_sent_at: string | null;
+    /** 발송 규칙 한 줄(Telegram: 위험 즉시·주의 요약·반복 억제). */
+    policy?: string;
+    suppressed?: number;
   }[];
   diagnostics: { location: string; directory?: string; captured_at?: string; py_spy?: string; error?: string }[];
 };
