@@ -210,7 +210,8 @@ webserver에만 `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING`(기본 1, 소유자
 **실제 SDK 확인(WSL 격리 PG, 운영 무관).** 새 이미지로 storage migrate → daemon(4·4·10) → webserver(pre-ping 1)를 띄워 daemon stderr
 `daemon 연결 풀: primary engine 3개 각 pool_size=4 max_overflow=4 pool_timeout=10s`, webserver stderr `webserver storage pre-ping: 켜짐`,
 GraphQL `runsOrError`·daemon 6종 healthy를 봤다. PG 컨테이너를 재시작(유휴 연결 절단)한 직후 첫 GraphQL 요청이 성공했고 daemon은
-재시도 경고 없이 70초 이상 돌았다. 잘못된 값(`POOL_SIZE=11`·빈 값, `PRE_PING=yes`)은 각각 종료 코드 2였다.
+재시도 경고 없이 70초 이상 돌았다. 대조군(`PRE_PING=0`, 같은 이미지·절차)은 재시작 직후 첫 요청이 `psycopg2.OperationalError: server
+closed the connection unexpectedly`로 실패하고 두 번째부터 성공했다 — PG 재시작·idle 절단 뒤 첫 요청 실패를 pre-ping이 없앤다. 잘못된 값(`POOL_SIZE=11`·빈 값, `PRE_PING=yes`)은 각각 종료 코드 2였다.
 운영 접속 수·tick 지연·수집 신선도는 배포 뒤 관측이다.
 
 **빌드 위치.** 이 이미지는 운영 박스에서 빌드하지 않는다(ADR-67) — WSL에서 `scripts/dagster_host_image.py build`로 만들어 옮긴다.
