@@ -99,6 +99,8 @@ _SCHEDULE_BACKFILL_REFRESH_SECONDS = 6 * 3600
 _ANALYTICS_RUN_MARGIN = 8
 #: 질의가 job의 최근 종료 run 30행만 읽으므로(`plane_watchdog_probe._TAGGED_JOB_RUNS_SQL`) 연속 + 여유가 그 안에 들어야 한다.
 _ANALYTICS_MAX_CONSECUTIVE = 30 - _ANALYTICS_RUN_MARGIN
+#: 아무것도 바꾸지 않은 자동 재시작 거부(C6c lock 경합 등)·직전 재확인 멈춤 뒤 다시 볼 때까지(초).
+_RESTART_RETRY_SECONDS = 1800
 
 
 # ---------------------------------------------------------------------------
@@ -226,10 +228,11 @@ def parse_config(document: Any) -> WatchdogConfig:
     auto_restart = _check_mapping(document["auto_restart"], _SECTION_KEYS["auto_restart"], "auto_restart")
     if not all(isinstance(host, str) and host.strip() for host in auto_restart["hosts"]):
         raise ConfigError("auto_restart.hosts는 호스트 이름 목록이어야 합니다")
-    if not 0.5 <= float(auto_restart["fd_ratio"]) <= 1:
-        raise ConfigError("auto_restart.fd_ratio는 0.5~1이어야 합니다")
-    if float(auto_restart["min_interval_hours"]) < 1:
-        raise ConfigError("auto_restart.min_interval_hours는 1 이상이어야 합니다")
+    # 소유자 승인 한도(fd 90% 이상, 컨테이너당 6시간 1회)보다 느슨하게는 못 바꾼다 — 더 엄격하게만.
+    if not 0.9 <= float(auto_restart["fd_ratio"]) <= 1:
+        raise ConfigError("auto_restart.fd_ratio는 0.9~1이어야 합니다(소유자 승인 한도)")
+    if float(auto_restart["min_interval_hours"]) < 6:
+        raise ConfigError("auto_restart.min_interval_hours는 6 이상이어야 합니다(소유자 승인 한도)")
     notifiers_raw = document["notifiers"]
     if not isinstance(notifiers_raw, dict) or set(notifiers_raw) != {"webhook", "telegram"}:
         raise ConfigError("notifiers는 webhook·telegram을 가져야 합니다")
@@ -945,6 +948,7 @@ class Probes(Protocol):
     def capture(self, location: str, context: dict[str, Any]) -> dict[str, Any] | None: ...
     def capture_fds(self, container: str, context: dict[str, Any]) -> dict[str, Any] | None: ...
     def running_runs(self, location: str) -> int: ...
+    def run_workers(self, container: str) -> int: ...
     def restart_container(self, container: str) -> dict[str, Any]: ...
     def host(self) -> str: ...
 
@@ -1016,6 +1020,9 @@ class HostProbes:
     def running_runs(self, location: str) -> int:
         return self._storage.running_runs(location)
 
+    def run_workers(self, container: str) -> int:
+        return probe_module.count_run_workers(container)
+
     def restart_container(self, container: str) -> dict[str, Any]:
         return restart_managed_code_server(container)
 
@@ -1031,16 +1038,25 @@ def restart_managed_code_server(container: str) -> dict[str, Any]:
 
     matches = [cid for cid, spec in MANAGED_CONTAINERS.items() if spec.get("name") == container]
     if len(matches) != 1:
-        return {"success": False, "error": "registry가 관리하는 컨테이너가 아닙니다"}
+        return {"success": False, "changed": False, "error": "registry가 관리하는 컨테이너가 아닙니다"}
     if "code-server" not in str(MANAGED_CONTAINERS[matches[0]].get("role") or ""):
-        return {"success": False, "error": "code-server 컨테이너가 아닙니다"}
-    from kor_travel_docker_manager.services.docker_service import docker_service
+        return {"success": False, "changed": False, "error": "code-server 컨테이너가 아닙니다"}
+    from kor_travel_docker_manager.services.docker_service import (
+        docker_service,
+        external_project_for_container,
+    )
 
+    if external_project_for_container(matches[0]) is not None:
+        # 형제 프로젝트 컨테이너는 `control_container`가 C6c lock 없이 SDK로 바로 다룬다 — 자동으로는 하지 않는다.
+        return {"success": False, "changed": False, "error": "형제 프로젝트 컨테이너는 C6c lock 밖이라 자동 재시작하지 않습니다"}
     try:
         result = docker_service.control_container(matches[0], "restart")
     except Exception as exc:  # noqa: BLE001 - C6c 거부(DeploymentContractError 등)도 결과로 남긴다
-        return {"success": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
-    return {"success": bool(result.get("success")), "error": result.get("error"),
+        # lock·계약 검사는 SDK 호출 전에 끝난다 — 여기서 나온 예외는 아무것도 바꾸지 않았다.
+        return {"success": False, "changed": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    success = bool(result.get("success"))
+    # SDK 단계의 실패는 컨테이너가 멈췄다 섰을 수 있다 — 바뀐 것으로 센다(한도를 다 쓴다).
+    return {"success": success, "changed": True, "error": result.get("error"),
             "message": result.get("message"), "container_id": matches[0]}
 
 
@@ -1413,27 +1429,32 @@ class PlaneWatchdog:
 
         assert self.config is not None and self._probes is not None
         settings = self.config.auto_restart
-        if not settings.get("enabled") or not findings:
+        if not settings.get("enabled") or self._host not in settings["hosts"]:
             return
-        if self._host not in settings["hosts"]:
-            return
-        candidates, skipped = restart_candidates(findings, self._containers_by_location(), settings)
+        candidates, skipped = restart_candidates(findings, self._fds, settings)
         notes = list(skipped)
+        if candidates and self._ledger.unreadable:
+            notes.insert(0, self._ledger.unreadable)
+            candidates = []
+        if candidates and (self._telegram is None or not self._telegram.active):
+            # 소유자 조건은 "재시작하면 알린다"다 — 알릴 수 없으면 하지 않는다(화면·로그의 제안 문구로 사람이 한다).
+            notes.insert(0, "알림 채널(Telegram)이 꺼져 있어 자동 재시작하지 않습니다")
+            candidates = []
         chosen: RestartCandidate | None = None
+        window = float(settings["min_interval_hours"]) * 3600
         for candidate in candidates:
             last = self._ledger.last_attempt(candidate.container)
-            window = float(settings["min_interval_hours"]) * 3600
             if last is not None and now - last < window:
                 notes.append(f"{candidate.container}: 마지막 자동 재시작 시도 {_human_duration(now - last)} 전 — "
                              f"{_human_duration(window)}에 한 번")
                 continue
-            try:
-                running = self._probes.running_runs(candidate.location)
-            except ProbeError as exc:
-                notes.append(f"{candidate.container}: 실행 중 run을 확인하지 못해 재시작하지 않습니다({exc})")
+            if (candidate.rule == "launch_failure_streak" and last is not None
+                    and (candidate.latest_failure_at or 0) <= last):
+                notes.append(f"{candidate.container}: 마지막 재시작 뒤 새 launch 실패가 없습니다(옛 실패로 다시 하지 않습니다)")
                 continue
-            if running:
-                notes.append(f"{candidate.container}: {candidate.location}에 실행 중 run {running}개 — 재시작하지 않습니다")
+            blocker = self._restart_blocker(candidate)
+            if blocker:
+                notes.append(blocker)
                 continue
             chosen = candidate
             break
@@ -1446,7 +1467,7 @@ class PlaneWatchdog:
         if not self._ledger.record(chosen.container, now):
             self._restart_busy.release()
             with self._lock:
-                self._restart_skips.insert(0, f"{chosen.container}: 재시작 기록을 남기지 못해(6시간 한도를 지킬 수 없음) 하지 않습니다")
+                self._restart_skips.insert(0, f"{chosen.container}: 재시작 기록을 남기지 못해(한도를 지킬 수 없음) 하지 않습니다")
             return
         if self._inline_diagnostics:
             self._run_restart(chosen, now)
@@ -1454,18 +1475,42 @@ class PlaneWatchdog:
             threading.Thread(target=self._run_restart, args=(chosen, now),
                              name=f"plane-watchdog-restart-{chosen.container}", daemon=True).start()
 
+    def _restart_blocker(self, candidate: RestartCandidate) -> str | None:
+        """실행 중 run이 있거나 확인하지 못하면 그 까닭. storage(run 상태)와 컨테이너 안 run worker를 **둘 다** 본다."""
+
+        assert self._probes is not None
+        try:
+            running = self._probes.running_runs(candidate.location)
+            workers = self._probes.run_workers(candidate.container)
+        except ProbeError as exc:
+            return f"{candidate.container}: 실행 중 run을 확인하지 못해 재시작하지 않습니다({exc})"
+        if running or workers:
+            return (f"{candidate.container}: {candidate.location}에 실행 중 run {running}개·컨테이너 안 run worker "
+                    f"{workers}개 — 재시작하지 않습니다")
+        return None
+
     def _run_restart(self, candidate: RestartCandidate, started: float) -> None:
         assert self.config is not None and self._probes is not None
         record: dict[str, Any] = {"container": candidate.container, "location": candidate.location,
                                   "rule": candidate.rule, "reason": candidate.reason, "at": _iso(started),
-                                  "success": False, "error": None, "diagnostics": {}}
+                                  "success": False, "changed": False, "error": None, "diagnostics": {}}
         try:
             context = {"host": self._host, "auto_restart": {**record, "phase": "before"}}
             record["diagnostics"]["before"] = self._capture_directory(candidate.container, context)
+            # 진단(수 초~수십 초) 사이에 run이 시작됐을 수 있다 — 재시작 바로 앞에서 다시 본다.
+            blocker = self._restart_blocker(candidate)
+            if blocker:
+                record["error"] = f"직전 재확인에서 멈춤: {blocker}"
+                self._ledger.record(candidate.container, started - self._restart_window() + _RESTART_RETRY_SECONDS)
+                return
             logger.warning("PLANE AUTO-RESTART %s (%s): %s", candidate.container, candidate.rule, candidate.reason)
             result = self._probes.restart_container(candidate.container)
             record["success"] = bool(result.get("success"))
+            record["changed"] = bool(result.get("changed", record["success"]))
             record["error"] = None if record["success"] else str(result.get("error") or "알 수 없는 오류")
+            if not record["changed"]:
+                # 아무것도 바꾸지 않은 거부(C6c lock 경합·계약·registry)는 한도를 다 쓰지 않는다 — 짧게 쉬고 다시 본다.
+                self._ledger.record(candidate.container, started - self._restart_window() + _RESTART_RETRY_SECONDS)
             if record["success"]:
                 self._sleep(float(self.config.auto_restart["post_restart_capture_seconds"]))
                 context = {"host": self._host, "auto_restart": {**record, "phase": "after"}}
@@ -1478,7 +1523,7 @@ class PlaneWatchdog:
             if record["success"]:
                 logger.warning("PLANE AUTO-RESTART done %s", candidate.container)
             else:
-                logger.error("PLANE AUTO-RESTART failed %s: %s", candidate.container, record["error"])
+                logger.error("PLANE AUTO-RESTART not done %s: %s", candidate.container, record["error"])
             with self._lock:
                 self._restarts.insert(0, record)
                 del self._restarts[20:]
@@ -1489,6 +1534,10 @@ class PlaneWatchdog:
                 except Exception:  # noqa: BLE001
                     logger.exception("plane watchdog auto-restart notification failed")
             self._restart_busy.release()
+
+    def _restart_window(self) -> float:
+        assert self.config is not None
+        return float(self.config.auto_restart["min_interval_hours"]) * 3600
 
     def _capture_directory(self, container: str, context: dict[str, Any]) -> str | None:
         assert self._probes is not None

@@ -575,6 +575,19 @@ def container_processes(container: str, runner: Runner = subprocess.run) -> list
     return processes
 
 
+#: compose probe의 `runs_in_flight`와 같은 표지 — run worker는 multiprocessing spawn 자식이다.
+_RUN_WORKER_MARKER = "from multiprocessing.spawn import spawn_main"
+
+
+def count_run_workers(container: str, runner: Runner = subprocess.run) -> int:
+    """컨테이너 안 run worker 프로세스 수. `docker top`을 읽지 못하면 ProbeError(모르면 재시작하지 않는다)."""
+
+    output = _docker_text(["top", container, "-eo", "pid,args"], runner)
+    if output is None:
+        raise ProbeError(f"{container}의 프로세스를 읽지 못했습니다.")
+    return sum(1 for line in output.splitlines()[1:] if _RUN_WORKER_MARKER in line)
+
+
 def read_container_fds(
     container: str, *, runner: Runner = subprocess.run, proc_root: Path = Path("/proc")
 ) -> ContainerFds | None:

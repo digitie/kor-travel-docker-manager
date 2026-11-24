@@ -195,21 +195,34 @@ PinVi launch 연속 실패(11-13 19:57 발화), PinVi sensor tick 연속 실패(
 
 n150 PinVi(11-13~16)·concierge(11-14~18) 사건은 code-server 안 `dagster api grpc` 프로세스가 fd를 다 써서 55·100시간 동안 모든 launch와
 sensor가 실패했고, 사람이 재시작할 때까지 풀리지 않았다. 소유자는 아래 조건에서만 Manager가 스스로 재시작하도록 허용했다
-(`services/plane_watchdog_restart.py`, 설정 `auto_restart`, 값의 정본은 `config/plane-watchdog.yml`).
+(`services/plane_watchdog_restart.py`, 설정 `auto_restart`, 값의 정본은 `config/plane-watchdog.yml` — 설정은 소유자 한도(fd 90%·6시간)보다
+**엄격하게만** 바꿀 수 있다).
 
 - **계기**: 그 code-server 컨테이너의 grpc 프로세스 fd 비율 ≥ `fd_ratio`(`dagster_fd_usage` 경보의 evidence), 또는 `on_launch_failure_streak`이면
-  그 location의 `launch_failure_streak` 경보(횟수는 그 규칙의 `count`). code-server 부모 프로세스·daemon·webserver의 fd는 계기가 아니다.
-- **조건**: 이 호스트가 `hosts`에 있다(기본 n150) · 그 location에 실행 중 run(STARTING·STARTED·CANCELING)이 **0**(storage 읽기 전용 질의,
-  확인하지 못하면 하지 않는다) · 같은 컨테이너의 마지막 **시도**가 `min_interval_hours`(6시간)보다 오래됐다.
-- **한도**: 시도 시각을 재시작 **전에** 상태 파일(`TRUSTED_STATE_ROOT` 아래 `plane-watchdog/auto-restart-state.json`, 0600)에 남긴다 —
-  실패도 한 번으로 세고(재시도 폭주 없음), Manager가 재시작해도 한도가 유지된다. 기록을 남기지 못하면 재시작하지 않는다. 한 번에 하나만 돈다.
+  그 location의 `launch_failure_streak` 경보(횟수는 그 규칙의 `count`). launch 계기는 가장 최근 실패가 마지막 재시작 시도보다 뒤일 때만
+  (재시작 전 실패로 다시 하지 않는다). code-server 부모 프로세스·daemon·webserver의 fd는 계기가 아니다.
+- **location↔컨테이너**: fd 관측(`docker top` 명령줄)에서 읽는다. 한 컨테이너에 location이 둘 이상 읽히거나 한 location을 컨테이너 둘이 실으면
+  모호하다 — 재시작하지 않는다(실행 중 run 확인이 엉뚱한 location을 볼 수 있다).
+- **조건**: 이 호스트가 `hosts`에 있다(기본 n150) · Telegram 발송이 켜져 있다(알릴 수 없으면 하지 않는다 — chat id를 넣기 전에는 자동 재시작도
+  없다) · 그 location에 실행 중 run(STARTING·STARTED·CANCELING, storage 읽기 전용 질의)이 0이고 **컨테이너 안 run worker**(compose probe와 같은
+  `multiprocessing.spawn` 표지, `docker top`)도 0 — 확인하지 못하면 하지 않는다 · 같은 컨테이너의 마지막 시도가 `min_interval_hours`보다 오래됐다.
+- **직전 재확인**: 재시작 전 진단(수 초~수십 초) 뒤, `control_container` 바로 앞에서 실행 중 run·worker를 **다시** 본다. 그새 run이 시작됐으면
+  멈추고 30분 뒤 다시 본다.
+- **한도**: 시도 시각을 재시작 **전에** 상태 파일(`TRUSTED_STATE_ROOT` 아래 `plane-watchdog/auto-restart-state.json`, 0600)에 남긴다 — SDK 단계
+  실패도 한 번으로 센다(재시도 폭주 없음), Manager가 재시작해도 유지된다. 기록을 남기지 못하면 하지 않는다. 파일이 깨졌으면 사람이 확인할
+  때까지 자동 재시작은 없다(fail-closed). 아무것도 바꾸지 않은 거부(C6c lock 경합·계약·registry 거부)와 직전 재확인 멈춤은 한도를 다 쓰지 않고
+  30분 뒤 다시 본다. 한 번에 하나만 돈다.
 - **경로(C6c 경계 안)**: 화면의 재시작 단추와 같은 정식 수명주기 경로 `docker_service.control_container(<registry id>, "restart")`만 쓴다.
   Manager compose 컨테이너(n150 code-server 다섯)면 그 경로가 C6c host lock을 **비대기**로 잡고(배포·다른 mutation이 돌고 있으면
   `ManagerMutationActiveError` — 아무것도 바꾸지 않는다) lock snapshot·Manager mutation 환경 계약을 대조한다. registry가 관리하지 않거나
-  role이 code-server가 아닌 컨테이너는 거부한다. 별도의 재시작 경로·`docker restart` 직접 호출은 없다. 컨테이너 자신의 stop grace를 쓴다.
-- **진단**: 재시작 직전과 `post_restart_capture_seconds` 뒤에 그 컨테이너의 fd 내역 진단(§5.1과 같은 수집)을 남긴다.
-- **알림**: 결과(완료·실패와 오류, 계기, 진단 디렉터리)를 Telegram으로 바로 보내고(억제 없음 — 횟수는 6시간 한도가 묶는다) 로그 WARNING
+  role이 code-server가 아니거나 **형제 프로젝트(`external_project`) 컨테이너**(그 경로는 C6c lock 없이 SDK로 바로 다룬다)는 거부한다. 별도의
+  재시작 경로·`docker restart` 직접 호출은 없다. 컨테이너 자신의 stop grace를 쓴다 — 그동안 lock을 쥐므로 그 사이 시작한 배포·화면 조작은
+  `ManagerMutationActiveError`로 거부된다(화면 재시작 단추와 같다).
+- **진단**: 재시작 직전과 `post_restart_capture_seconds` 뒤에 그 컨테이너의 fd 내역 진단(§5.1과 같은 수집, 디렉터리 이름에 `-restart-before`·
+  `-restart-after`)을 남긴다.
+- **알림**: 결과(완료·실패와 오류, 계기, 진단 디렉터리)를 Telegram으로 바로 보내고(억제 없음 — 횟수는 한도가 묶는다) 로그 WARNING
   `PLANE AUTO-RESTART`, 화면 수집 경보 패널의 "자동 재시작" 줄·기록·보류 사유에 남긴다.
+- **남는 한계**: worker 없는 orphan STARTED run(DefaultRunLauncher는 죽은 worker를 못 본다)이 `max_runtime`까지 남으면 그동안 재시작이 막힌다 —
+  안전한 쪽 실패(보류 사유에 "실행 중 run N개"로 보인다).
 - **odroid**: 기본 꺼짐(`hosts`에 없음). odroid의 code-server는 host compose(`/opt/kor-travel-odroid`)라 registry·C6c 경로가 n150과 다를 수 있다 —
   odroid에서 켜려면 그 호스트의 `control_container` 경로를 확인한 뒤 `hosts`에 더한다(Codex).
-

@@ -6,6 +6,9 @@
   컨테이너는 C6c host lock(비대기, 배포 중이면 아무것도 바꾸지 않고 거부)과 mutation 환경 계약을 그대로 지난다. registry 밖·code-server가
   아닌 컨테이너는 거부.
 - 재시작 전후 fd 진단, Telegram 결과 알림, 화면 "자동 재시작" 줄·기록·보류 사유. ADR-64 결과의 "자동 재시작 없음"을 갱신했다.
+- 적대 리뷰(자동 운영 변경 안전성) 반영: 진단 뒤 재시작 바로 앞 실행 중 run·컨테이너 안 run worker 재확인(P1 TOCTOU), launch 계기는 마지막
+  시도 뒤 새 실패만, 설정은 소유자 한도보다 엄격하게만, 아무것도 바꾸지 않은 거부는 30분 뒤 재시도, 깨진 기록 파일은 fail-closed, 진단 디렉터리
+  충돌, Telegram이 꺼져 있으면 재시작 안 함, 모호한 location 대응 거부, 형제 프로젝트 컨테이너 거부.
 - 시험: `backend/tests/test_plane_watchdog_restart.py`, `frontend/e2e/plane-alerts.spec.ts`. [자세히](plane-watchdog.md#9-code-server-자동-재시작소유자-승인-2026-11-24--제한적)
 
 ## 2026-11-24 — 수집 경보 Telegram 발송(위험 즉시·주의 하루 1회 요약)

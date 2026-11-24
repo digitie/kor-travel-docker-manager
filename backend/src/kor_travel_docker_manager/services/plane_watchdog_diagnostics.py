@@ -323,8 +323,18 @@ def capture_fd_usage(
 
     moment = (now or _dt.datetime.now(_dt.UTC)).astimezone(_dt.UTC)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    target = directory / f"{moment.strftime('%Y%m%dT%H%M%SZ')}-fd-{_slug(container)}"
-    target.mkdir(mode=0o700)
+    phase = str(((context or {}).get("auto_restart") or {}).get("phase") or "")  # type: ignore[union-attr]
+    name = f"{moment.strftime('%Y%m%dT%H%M%SZ')}-fd-{_slug(container)}" + (f"-restart-{_slug(phase)}" if phase else "")
+    target = directory / name
+    for attempt in range(2, 20):
+        try:
+            target.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            # 같은 초에 경보 진단과 재시작 전 진단이 겹칠 수 있다(Manager 재시작 직후).
+            target = directory / f"{name}-{attempt}"
+    else:
+        target.mkdir(mode=0o700)
     result = CaptureResult(location=container, directory=str(target),
                            captured_at=moment.isoformat().replace("+00:00", "Z"), py_spy="n/a",
                            containers=[container])

@@ -37,6 +37,8 @@ class Probes:
         self._host = host
         self.fds = [_fd(980)]
         self.running = 0
+        self.running_sequence: list[int] = []  # 차례로 돌려줄 값(직전 재확인 시험)
+        self.workers = 0
         self.running_error: str | None = None
         self.launch_failures = False
         self.restarts: list[str] = []
@@ -68,22 +70,32 @@ class Probes:
     def running_runs(self, location):
         if self.running_error:
             raise pr.ProbeError(self.running_error)
+        if self.running_sequence:
+            return self.running_sequence.pop(0)
         return self.running
+
+    def run_workers(self, container):
+        return self.workers
 
     def restart_container(self, container):
         self.restarts.append(container)
         return self.restart_result
 
 
-def _watchdog(config, probes: Probes, tmp_path: Path, sent: list[str] | None = None,
-              monkeypatch: pytest.MonkeyPatch | None = None) -> wd.PlaneWatchdog:
+@pytest.fixture
+def telegram_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PINVI_TELEGRAM_BOT_TOKEN_DEFAULT", "123:TOKEN")
+    monkeypatch.setenv("KTDM_ALERT_TELEGRAM_CHAT_ID", "42")
+
+
+def _watchdog(config, probes: Probes, tmp_path: Path, sent: list[str] | None = None) -> wd.PlaneWatchdog:
+    """Telegram이 켜진 감시자(소유자 조건: 알릴 수 있어야 재시작한다). ``telegram_env``와 함께 쓴다."""
+
     watchdog = wd.PlaneWatchdog(config, probes=probes, clock=lambda: probes.now, run_diagnostics_inline=True,
                                 restart_ledger_path=tmp_path / "auto-restart-state.json", sleep=lambda seconds: None)
-    if sent is not None and monkeypatch is not None:
-        monkeypatch.setenv("PINVI_TELEGRAM_BOT_TOKEN_DEFAULT", "123:TOKEN")
-        monkeypatch.setenv("KTDM_ALERT_TELEGRAM_CHAT_ID", "42")
-        watchdog._telegram._transport = httpx.MockTransport(
-            lambda request: sent.append(json.loads(request.content)["text"]) or httpx.Response(200))
+    texts = sent if sent is not None else []
+    watchdog._telegram._transport = httpx.MockTransport(
+        lambda request: texts.append(json.loads(request.content)["text"]) or httpx.Response(200))
     return watchdog
 
 
@@ -94,7 +106,7 @@ def test_repository_config_limits_auto_restart_to_n150(config):
 
 
 @pytest.mark.parametrize(("key", "value", "message"), [
-    ("fd_ratio", 0.3, "0.5~1"), ("min_interval_hours", 0.5, "1 이상"), ("hosts", [""], "호스트 이름"),
+    ("fd_ratio", 0.8, "0.9~1"), ("min_interval_hours", 2, "6 이상"), ("hosts", [""], "호스트 이름"),
 ])
 def test_auto_restart_config_is_validated(config, key, value, message):
     document = json.loads(json.dumps({
@@ -111,27 +123,42 @@ def test_auto_restart_config_is_validated(config, key, value, message):
 
 def test_candidates_need_grpc_fd_ninety_percent_or_a_launch_streak(config):
     settings = config.auto_restart
-    containers = {LOCATION: CONTAINER}
-    critical = wd.evaluate_fds([_fd(930)], config.rule("dagster_fd_usage"))
-    [candidate], _ = restart_candidates(critical, containers, settings)
+    fds = [_fd(930)]
+    critical = wd.evaluate_fds(fds, config.rule("dagster_fd_usage"))
+    [candidate], _ = restart_candidates(critical, fds, settings)
     assert (candidate.container, candidate.location, candidate.rule) == (CONTAINER, LOCATION, "dagster_fd_usage")
     assert "930/1024" in candidate.reason
     # 80%대 위험 fd 경보는 재시작하지 않는다(소유자 기준 90%). code-server 부모 프로세스 경보도 아니다.
-    assert restart_candidates(wd.evaluate_fds([_fd(900)], config.rule("dagster_fd_usage")), containers, settings)[0] == []
-    assert restart_candidates(wd.evaluate_fds([_fd(990, "code-server")], config.rule("dagster_fd_usage")),
-                              containers, settings)[0] == []
+    assert restart_candidates(wd.evaluate_fds([_fd(900)], config.rule("dagster_fd_usage")), fds, settings)[0] == []
+    parent = [_fd(990, "code-server")]
+    assert restart_candidates(wd.evaluate_fds(parent, config.rule("dagster_fd_usage")), parent, settings)[0] == []
     streak = wd.Finding("launch_failure_streak", LOCATION, "critical", "t", "d",
-                        {"streak": 5, "first_failure_at": "2026-11-13T19:40:00Z"})
-    [candidate], _ = restart_candidates([streak], containers, settings)
+                        {"streak": 5, "first_failure_at": "2026-11-13T19:40:00Z",
+                         "latest_failure_at": "2026-11-13T19:57:00Z"})
+    [candidate], _ = restart_candidates([streak], fds, settings)
     assert candidate.rule == "launch_failure_streak" and "5회 연속" in candidate.reason
-    assert restart_candidates([streak], {}, settings) == ([], [
-        f"{LOCATION}: launch 연속 실패지만 그 location의 code-server 컨테이너를 모릅니다"])
+    assert candidate.latest_failure_at is not None
+    assert restart_candidates([streak], [], settings) == ([], [
+        f"{LOCATION}: launch 연속 실패지만 그 location의 code-server 컨테이너가 없습니다"])
 
 
-def test_restart_runs_once_with_diagnostics_and_notification(config, tmp_path, monkeypatch):
+def test_ambiguous_location_mapping_never_restarts(config):
+    # `--location-name X -m mod`처럼 location이 둘로 읽히거나, 같은 location을 컨테이너 둘이 실으면 모호하다.
+    settings = config.auto_restart
+    two = [pr.ContainerFds(CONTAINER, 980, 1024, 1000, 4, "grpc", 1, (LOCATION, "pinvi.etl"))]
+    findings = wd.evaluate_fds(two, config.rule("dagster_fd_usage"))
+    candidates, notes = restart_candidates(findings, two, settings)
+    assert candidates == [] and "모호" in notes[0]
+    twins = [_fd(40), pr.ContainerFds("pinvi-e2e-code-server", 40, 1024, 60, 2, "grpc", 2, (LOCATION,))]
+    streak = wd.Finding("launch_failure_streak", LOCATION, "critical", "t", "d", {"streak": 5})
+    candidates, notes = restart_candidates([streak], twins, settings)
+    assert candidates == [] and "여럿" in notes[0]
+
+
+def test_restart_runs_once_with_diagnostics_and_notification(config, tmp_path, telegram_env):
     probes = Probes()
     sent: list[str] = []
-    watchdog = _watchdog(config, probes, tmp_path, sent, monkeypatch)
+    watchdog = _watchdog(config, probes, tmp_path, sent)
     watchdog.evaluate_once()
     assert probes.restarts == [CONTAINER]
     assert (CONTAINER, "before") in probes.captures and (CONTAINER, "after") in probes.captures
@@ -156,7 +183,7 @@ def test_restart_runs_once_with_diagnostics_and_notification(config, tmp_path, m
     assert probes.restarts == [CONTAINER, CONTAINER]
 
 
-def test_running_runs_block_the_restart(config, tmp_path):
+def test_running_runs_block_the_restart(config, tmp_path, telegram_env):
     probes = Probes()
     probes.running = 2
     watchdog = _watchdog(config, probes, tmp_path)
@@ -164,7 +191,11 @@ def test_running_runs_block_the_restart(config, tmp_path):
     assert probes.restarts == []
     assert any("실행 중 run 2개" in note for note in watchdog.status_payload()["auto_restart"]["skipped"])
     # 확인하지 못하면 하지 않는다.
-    probes.running, probes.running_error = 0, "storage 질의 실패"
+    probes.running, probes.workers = 0, 1  # storage는 0인데 컨테이너 안 worker가 있다
+    watchdog.evaluate_once()
+    assert probes.restarts == []
+    assert any("run worker 1개" in note for note in watchdog.status_payload()["auto_restart"]["skipped"])
+    probes.workers, probes.running_error = 0, "storage 질의 실패"
     watchdog.evaluate_once()
     assert probes.restarts == []
     # 시도 기록도 남기지 않았다 — 조건이 풀리면 바로 한다.
@@ -173,14 +204,14 @@ def test_running_runs_block_the_restart(config, tmp_path):
     assert probes.restarts == [CONTAINER]
 
 
-def test_other_hosts_never_restart(config, tmp_path):
+def test_other_hosts_never_restart(config, tmp_path, telegram_env):
     probes = Probes(host="odroid")
     watchdog = _watchdog(config, probes, tmp_path)
     watchdog.evaluate_once()
     assert probes.restarts == [] and watchdog.status_payload()["auto_restart"]["active_on_host"] is False
 
 
-def test_launch_streak_restarts_the_location_code_server(config, tmp_path):
+def test_launch_streak_restarts_the_location_code_server(config, tmp_path, telegram_env):
     probes = Probes()
     probes.fds = [_fd(40)]  # fd는 정상, launch만 연속 실패
     probes.launch_failures = True
@@ -190,12 +221,12 @@ def test_launch_streak_restarts_the_location_code_server(config, tmp_path):
     assert watchdog.status_payload()["auto_restart"]["recent"][0]["rule"] == "launch_failure_streak"
 
 
-def test_refused_restart_is_reported_and_still_counts(config, tmp_path, monkeypatch):
+def test_refused_restart_is_reported_and_still_counts(config, tmp_path, telegram_env):
     probes = Probes()
     probes.restart_result = {"success": False,
                              "error": "ManagerMutationActiveError: another Manager mutation is already active"}
     sent: list[str] = []
-    watchdog = _watchdog(config, probes, tmp_path, sent, monkeypatch)
+    watchdog = _watchdog(config, probes, tmp_path, sent)
     watchdog.evaluate_once()
     [record] = watchdog.status_payload()["auto_restart"]["recent"]
     assert record["success"] is False and "already active" in record["error"]
@@ -206,7 +237,7 @@ def test_refused_restart_is_reported_and_still_counts(config, tmp_path, monkeypa
     assert probes.restarts == [CONTAINER]  # 실패도 6시간 한도에 센다(재시도 폭주 없음)
 
 
-def test_ledger_write_failure_blocks_the_restart(config, tmp_path, monkeypatch):
+def test_ledger_write_failure_blocks_the_restart(config, tmp_path, telegram_env, monkeypatch):
     probes = Probes()
     watchdog = _watchdog(config, probes, tmp_path)
     monkeypatch.setattr(RestartLedger, "record", lambda self, container, at: False)
@@ -224,6 +255,7 @@ def test_restart_uses_the_managed_lifecycle_path_only(monkeypatch):
         "pinvi-api": {"name": "pinvi-api-latest", "role": "pinvi-api"},
     }
     monkeypatch.setattr(registry, "MANAGED_CONTAINERS", containers)
+    monkeypatch.setattr(ds, "external_project_for_container", lambda container_id: None)
     calls: list[tuple[str, str]] = []
 
     def control(container_id, action):
@@ -234,16 +266,16 @@ def test_restart_uses_the_managed_lifecycle_path_only(monkeypatch):
     assert wd.restart_managed_code_server(CONTAINER)["success"] is True
     assert calls == [("pinvi-dagster-code-server", "restart")]
     assert wd.restart_managed_code_server("pinvi-api-latest") == {
-        "success": False, "error": "code-server 컨테이너가 아닙니다"}
+        "success": False, "changed": False, "error": "code-server 컨테이너가 아닙니다"}
     assert wd.restart_managed_code_server("stranger") == {
-        "success": False, "error": "registry가 관리하는 컨테이너가 아닙니다"}
+        "success": False, "changed": False, "error": "registry가 관리하는 컨테이너가 아닙니다"}
 
     def refuse(container_id, action):
         raise ds.DeploymentContractError("cannot acquire C6c deployment lock")
 
     monkeypatch.setattr(ds.docker_service, "control_container", refuse)
     result = wd.restart_managed_code_server(CONTAINER)
-    assert result["success"] is False and "C6c deployment lock" in result["error"]
+    assert result["success"] is False and result["changed"] is False and "C6c deployment lock" in result["error"]
 
 
 def test_running_runs_query_is_read_only(monkeypatch):
@@ -263,3 +295,97 @@ def test_running_runs_query_is_read_only(monkeypatch):
         argv, 0, '{"running": "x"}\n', ""))
     with pytest.raises(pr.ProbeError):
         client.running_runs(LOCATION)
+
+
+def test_run_started_during_diagnostics_stops_the_restart(config, tmp_path, telegram_env):
+    probes = Probes()
+    probes.running_sequence = [0, 1]  # 고를 때 0, 진단 뒤 직전 재확인에서 1
+    sent: list[str] = []
+    watchdog = _watchdog(config, probes, tmp_path, sent)
+    watchdog.evaluate_once()
+    assert probes.restarts == []
+    [record] = watchdog.status_payload()["auto_restart"]["recent"]
+    assert record["success"] is False and record["changed"] is False and "직전 재확인" in record["error"]
+    # 바꾼 것이 없으니 6시간이 아니라 30분 뒤 다시 본다.
+    probes.now += 1700
+    watchdog.evaluate_once()
+    assert probes.restarts == []
+    probes.now += 200
+    watchdog.evaluate_once()
+    assert probes.restarts == [CONTAINER]
+
+
+def test_refusal_that_changed_nothing_retries_after_thirty_minutes(config, tmp_path, telegram_env):
+    probes = Probes()
+    probes.restart_result = {"success": False, "changed": False,
+                             "error": "ManagerMutationActiveError: another Manager mutation is already active"}
+    watchdog = _watchdog(config, probes, tmp_path)
+    watchdog.evaluate_once()
+    probes.restart_result = {"success": True, "changed": True}
+    probes.now += 1900
+    watchdog.evaluate_once()
+    assert probes.restarts == [CONTAINER, CONTAINER]
+
+
+def test_old_launch_failures_do_not_trigger_a_second_restart(config, tmp_path, telegram_env):
+    probes = Probes()
+    probes.fds = [_fd(40)]
+    probes.launch_failures = True
+    watchdog = _watchdog(config, probes, tmp_path)
+    watchdog.evaluate_once()
+    assert probes.restarts == [CONTAINER]
+    # 재시작 뒤 새 run이 없으면 feed의 옛 실패로 streak가 남는다 — 한도가 지나도 다시 하지 않는다.
+    frozen = probes.now
+    probes.now += 7 * 3600
+    probes.runs_since = lambda since: [  # type: ignore[method-assign]
+        pr.RunRecord(f"r{i}", "job", LOCATION, None, "FAILURE", frozen - 900 + i, probes.now - 3600 + i, True)
+        for i in range(5)]
+    watchdog._feed.clear()
+    watchdog.evaluate_once()
+    assert probes.restarts == [CONTAINER, CONTAINER]  # 새 실패(재시작 뒤 시각)면 다시 한다
+    probes.now += 7 * 3600
+    probes.runs_since = lambda since: []  # type: ignore[method-assign]
+    watchdog.evaluate_once()
+    assert probes.restarts == [CONTAINER, CONTAINER]
+
+
+def test_no_notification_channel_means_no_restart(config, tmp_path):
+    probes = Probes()
+    watchdog = wd.PlaneWatchdog(config, probes=probes, clock=lambda: probes.now, run_diagnostics_inline=True,
+                                restart_ledger_path=tmp_path / "ledger.json", sleep=lambda seconds: None)
+    watchdog.evaluate_once()
+    assert probes.restarts == []
+    assert "알림 채널(Telegram)이 꺼져" in watchdog.status_payload()["auto_restart"]["skipped"][0]
+
+
+def test_corrupt_ledger_blocks_restarts(config, tmp_path, telegram_env):
+    (tmp_path / "auto-restart-state.json").write_text("{not json", encoding="utf-8")
+    probes = Probes()
+    watchdog = _watchdog(config, probes, tmp_path)
+    watchdog.evaluate_once()
+    assert probes.restarts == []
+    assert "깨졌습니다" in watchdog.status_payload()["auto_restart"]["skipped"][0]
+
+
+def test_external_project_code_server_is_refused(monkeypatch):
+    from kor_travel_docker_manager.services import docker_service as ds
+    from kor_travel_docker_manager.services import registry
+
+    monkeypatch.setattr(registry, "MANAGED_CONTAINERS", {
+        "transport-code-server": {"name": "kor-travel-transport-dagster-code-server-1", "role": "dagster-code-server"}})
+    monkeypatch.setattr(ds, "external_project_for_container", lambda container_id: {"project": "kor-travel-transport"})
+    monkeypatch.setattr(ds.docker_service, "control_container",
+                        lambda *args: pytest.fail("C6c 밖 컨테이너를 재시작하면 안 된다"))
+    result = wd.restart_managed_code_server("kor-travel-transport-dagster-code-server-1")
+    assert result["success"] is False and result["changed"] is False and "C6c lock 밖" in result["error"]
+
+
+def test_run_workers_are_counted_from_docker_top():
+    def runner(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, "PID COMMAND\n10 /usr/local/bin/python -m dagster code-server start\n"
+                                           "11 /usr/local/bin/python -c from multiprocessing.spawn import spawn_main; "
+                                           "spawn_main(tracker_fd=5)\n", "")
+    assert pr.count_run_workers(CONTAINER, runner) == 1
+    with pytest.raises(pr.ProbeError):
+        pr.count_run_workers(CONTAINER, lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "no such container"))
+
