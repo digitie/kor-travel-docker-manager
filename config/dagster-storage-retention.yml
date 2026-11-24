@@ -1,0 +1,26 @@
+# 공용 Dagster storage 보존 정리 설정 — 두 plane(n150·odroid) 공통(2026-11-24 소유자 결정, ADR-66).
+# 정리 job: backend/src/kor_travel_docker_manager/dagster_storage_retention.py, 주 1회 systemd timer
+# (deploy/systemd/ktdm-dagster-storage-retention.timer). 설명: docs/dagster-storage-retention.md.
+# 모든 키가 필수다 — 빠지거나 모르는 키, 0 이하는 거부한다(기본값을 조용히 채우지 않는다).
+version: 1
+
+runs:
+  # 종료 run의 보존 일수(마지막 갱신 시각 `runs.update_timestamp` 기준). 진행 중·대기 run은 나이와 무관하게 남는다.
+  success_days: 90   # SUCCESS
+  failure_days: 180  # FAILURE·CANCELED — 실패 원인을 오래 본다
+
+ticks:
+  # 멈춘 instigator(RUNNING이 아님: STOPPED·DECLARED_IN_CODE·행 없음)의 tick 중 이보다 오래된 것. 그 selector에
+  # 이 창 안의 tick이 하나라도 있으면 건드리지 않는다. RUNNING instigator의 tick은 Dagster `retention`이 지운다.
+  stopped_instigator_days: 14
+
+batch:
+  runs: 200          # run 한 배치(한 트랜잭션). run 하나에 event_log 평균 약 19행(n150 2026-11-24)
+  ticks: 5000        # tick 한 배치
+  pause_seconds: 1.0 # 배치 사이 쉼 — 다른 테넌트의 쓰기에 자리를 비운다
+
+timeouts:
+  statement_seconds: 60   # 배치 한 문장의 상한(statement_timeout·idle_in_transaction_session_timeout)
+  plan_statement_seconds: 600  # dry-run 집계(읽기 전용, 지울 run 전부를 한 문장으로 센다 — odroid 실측 4천여 run 약 53초)
+  lock_seconds: 5         # lock 대기 상한 — 배포·storage migrate와 겹치면 그 배치만 실패하고 멈춘다
+  max_runtime_seconds: 2700  # 한 번 실행의 상한(45분). 남은 것은 다음 주에 이어 지운다

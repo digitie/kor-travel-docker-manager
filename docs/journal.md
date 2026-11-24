@@ -1,3 +1,15 @@
+## 2026-11-24 — 공용 Dagster storage 보존 정리(ADR-66)
+
+- 소유자 결정: run SUCCESS 90일·FAILURE·CANCELED 180일, 멈춘 instigator의 14일 넘은 tick. 정리 job은 Manager 소유, 주 1회(일요일
+  06:10 KST systemd timer — 공용 Dagster 밖), 배치 트랜잭션·statement/lock timeout·진행 JSON 로그·dry-run 기본, 두 plane 공통 설정.
+- Dagster 1.13.24 원문 검토: `delete_run` = runs 삭제(run_tags FK cascade) + `delete_events`(event_logs·asset_event_tags·concurrency
+  slot). 같은 표를 같은 순서로 SQL 한 트랜잭션에 옮기고 자산 최신 event·asset check 최신 실행·재실행 계보·backfill·slot을 쥔 run은
+  남겼다. `delete_run`이 남기는 asset_check_executions도 지운다. schema가 alembic `29b539ebc72a`가 아니면 지우지 않는다.
+- 실측(읽기 전용, 두 호스트): run은 공용 storage 시작(n150 09-30·odroid 10-14) 이후라 첫 실행에 지울 run 0. 멈춘 instigator tick은
+  n150 70,576행(41 selector — 행 없음 35·DECLARED_IN_CODE 5·STOPPED 1), odroid 325행. 14일 안에 tick이 없는 RUNNING schedule
+  14개(월 1회)는 Dagster가 다음 tick에 지우므로 제외했다 — 처음 안(창 안 tick 없음만)은 이것까지 지웠다.
+- 시험: 단위 `test_dagster_storage_retention.py`, 실제 PG·Dagster storage `test_dagster_storage_retention_integration.py`.
+
 ## 2026-11-24 — 공용 Dagster 테넌트 공정성: location 상한·`dagster/priority` 규칙(ADR-65)
 
 - 소유자 결정: n150 location 상한 Map 10→4·PinVi 10→2·Concierge 2(전역 6 유지). odroid transport 3·weather 3·geo 1은 이미 전역 5보다

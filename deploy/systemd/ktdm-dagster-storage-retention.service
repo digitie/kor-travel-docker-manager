@@ -1,0 +1,13 @@
+[Unit]
+Description=Kor Travel shared Dagster storage retention (runs, event logs, stopped-instigator ticks)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kor-travel-docker-manager/backend/.venv/bin/python -I -m kor_travel_docker_manager.dagster_storage_retention --apply
+# 설정의 max_runtime_seconds(45분)보다 넉넉히. 배치 하나가 statement timeout(60초)+여유 안에 끝난다.
+TimeoutStartSec=55min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
