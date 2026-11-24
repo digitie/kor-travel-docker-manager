@@ -79,6 +79,9 @@ SQL 재검토를 요구한다. 손대지 않는 표: `snapshots`(job·실행 계
 - dry-run의 run 집계는 지울 run 전부를 한 읽기 전용 문장으로 세므로 상한이 따로다(`timeouts.plan_statement_seconds` 600초 —
   2026-11-24 30일 가정 실측(계보 묶음 판정 포함): n150 2.5만 run 14초, odroid 5.4천 run 55초). apply의 배치는 200 run씩이라 60초 상한 안이다.
 - 출력: JSON 한 줄씩 — 배치마다 `{"event": "batch", "phase": …}`, 끝에 `{"event": "summary", …}`. journal에 남는다.
+- schema 재확인은 쓰기 트랜잭션의 첫 문장이라, 그것과 DELETE 문장 사이(밀리초)에 storage migrate가 commit하는 경합은 남는다.
+- 성능 관찰: 보호로 남는 계보 묶음이 쌓이면 배치마다 씨앗을 다시 훑는다. 첫 실제 run 삭제(n150 2026-12-29 무렵) 뒤 배치 `elapsed`를
+  보고 60초 상한에 다가가면 씨앗 범위를 좁힌다.
 - 디스크: PostgreSQL은 지운 행의 자리를 autovacuum 뒤 재사용한다. 파일 크기를 줄이지는 않는다(VACUUM FULL은 하지 않는다).
   run별 compute log·artifact 파일은 DB 밖이라 이 job이 지우지 않는다(code-server별 compute-log 정리, `dagster-progress-logging.md`).
 - 지운 run의 경계: run_key로 중복을 막는 sensor는 지운 run의 key를 다시 낼 수 있다(`delete_run`과 같다). 테넌트가 90일 넘게 열어 둔

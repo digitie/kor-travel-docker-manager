@@ -181,10 +181,11 @@ _ROOT_TAG = "'dagster/root_run_id'"
 def _expired(m: str) -> str:
     """run `m`이 종료 상태이고 그 상태의 보존 일수를 넘겼다. 진행 중·대기 상태는 나이와 무관하게 거짓이다."""
 
-    return f"""(
+    # update_timestamp가 NULL이면(이론상 — server default가 있다) 만료로 보지 않는다(coalesce false → 남긴다).
+    return f"""coalesce((
         ({m}.status = 'SUCCESS' AND {m}.update_timestamp < {_NOW} - make_interval(days => :success_days))
         OR ({m}.status IN ('FAILURE', 'CANCELED')
-            AND {m}.update_timestamp < {_NOW} - make_interval(days => :failure_days)))"""
+            AND {m}.update_timestamp < {_NOW} - make_interval(days => :failure_days))), false)"""
 
 
 def _member_must_stay(m: str) -> str:
