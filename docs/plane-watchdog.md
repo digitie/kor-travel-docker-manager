@@ -153,20 +153,30 @@ Manager에는 기존 알림 발송 수단이 없다(Alertmanager는 두지 않�
 
 - **토큰**: Manager root `.env`의 `PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`(PinVi compose에 이미 넘기는 값)를 backend가 `load_dotenv`로 읽는다.
   복사하지 않고, 화면·상태 API·로그·상태 파일에 내지 않는다. 토큰이 URL 경로에 들어가므로 httpx 예외 문구는 남기지 않고 종류만 남기며,
-  httpx가 INFO로 남기는 요청 URL(`/bot<토큰>/`)은 로그 filter가 가린다.
+  httpx가 INFO로 남기는 요청 URL(`/bot<토큰>/`)은 `httpx` logger의 filter가 가린다.
 - **받는 chat**: root `.env`의 `KTDM_ALERT_TELEGRAM_CHAT_ID`(소유자가 넣는다). PinVi 운영 알림 chat은 PinVi `.env`의
   `PINVI_TELEGRAM_ADMIN_CHAT_ID`(PinVi `docs/integrations/telegram.md` §3)라 같은 값을 넣거나 소유자 개인 chat id를 넣는다. 토큰이나
   chat id가 비면 보내지 않고 화면에 "chat이 비어 있어 보내지 않습니다"로 보인다.
-- **위험(critical)**: firing·escalated(주의→위험) 때 바로 보낸다. 바로 보낸 경보가 풀리면 해소를 한 번 보낸다.
-- **반복 억제**: 같은 경보 key를 `repeat_suppress_minutes`(기본 360분) 안에 다시 보내지 않는다 — 울렸다 풀렸다 하는 경보, Manager 재시작
-  직후 다시 울리는 경보. 억제한 재발화의 해소도 보내지 않는다(받는 사람이 마지막으로 안 것이 이미 "해소"다).
-- **주의(warning)**: 바로 보내지 않고 매일 KST `digest_hour_kst`(기본 09시) 뒤 첫 평가에서 요약 한 통 — 지난 요약 뒤 울린 주의, 지금
-  울리는 주의, 그사이 풀린 주의. 셋 다 없으면 보내지 않는다.
+발송은 전이(event)가 아니라 **매 평가의 활성 경보와 "받는 사람이 아는 것"을 맞추는 방식**이다(`TelegramNotifier.reconcile`). 그래야
+보내지 못한 경보가 사라지지 않고, 억제 창이 끝났을 때 아직 울리는 경보를 놓치지 않는다. 기본값(억제 분·요약 시각·timeout)의 정본은
+`config/plane-watchdog.yml`이다.
+
+- **위험(critical)**: 활성인데 받는 사람이 모르면 바로 보낸다. 보낸 경보가 활성에서 빠지면 해소를 한 번 보낸다 — 단 그 규칙이 이번
+  평가에서 **관측됐을 때만**(측정 실패·Manager 재시작 직후의 빈 목록으로 거짓 해소를 보내지 않는다; Manager가 꺼진 사이 풀린 경보도
+  다음 관측에서 해소를 보낸다). 주의였다가 위험으로 오르면 "주의에서 위험으로 올랐습니다"로 바로 보낸다.
+- **반복 억제**: 해소를 보낸 경보가 `repeat_suppress_minutes` 안에 다시 울리면 창이 끝날 때까지 기다린다. 창 안에 다시 풀리면 아무것도
+  보내지 않고, 창이 끝났을 때 아직 울리면 보낸다.
+- **주의(warning)**: 매일 KST `digest_hour_kst` 시 뒤 첫 평가에서 요약 한 통 — 지난 요약 뒤 울린 주의, 지금 울리는 주의, 그사이 풀린 주의
+  (항목은 구역마다 20개 + "외 N건", 본문이 길어도 대시보드 링크는 남긴다). 셋 다 없으면 보내지 않는다.
+- **실패**: 보내지 못한 것은 다음 평가에 다시 보낸다. 실패하면 간격을 늘리고(60초부터 두 배, 최대 30분, 429면 Telegram `retry_after`)
+  그동안 보내지 않는다. 한 평가에 5통까지만 보낸다 — 동기 HTTP가 평가 루프를 오래 붙잡지 않게(`timeout_seconds`는 1~30). 화면에
+  최근 실패 종류(`HTTP 429` 등)와 시각이 남는다.
 - **메시지**: 일반 텍스트(parse_mode 없음). 호스트·규칙·대상(location 등)·제목(값)·상세(600자)·시작 시각(KST)·대시보드 링크
   (`KTDM_ALERT_DASHBOARD_URL`, 비면 `KTDM_FRONTEND_ORIGINS`의 첫 https origin + `/#plane-alerts`).
-- **상태 파일**: 바로 보낸 key·요약 대기열·마지막 요약 날짜를 `/var/lib/kor-travel-docker-manager/plane-watchdog/telegram-state.json`
-  (0600)에 둔다 — 재시작해도 같은 위험 경보를 다시 보내지 않고 요약을 잃지 않는다. 깨졌으면 빈 상태로 시작한다.
-- 실패는 재시도하지 않고 화면에 종류(`HTTP 429` 등)만 남긴다.
+- **상태 파일**: 받는 사람이 아는 위험 경보·억제 창·요약 대기열·마지막 요약 날짜를 Manager 상태 root(`TRUSTED_STATE_ROOT`) 아래
+  `plane-watchdog/telegram-state.json`(0600)에 둔다. 깨졌으면 빈 상태로 시작한다.
+- **시험**: `backend/tests/conftest.py`가 두 변수를 지운다 — `main` import가 root `.env`를 올리므로 운영 체크아웃 옆에서 pytest를 돌려도
+  실제 chat으로 나가지 않는다.
 
 일반 webhook(JSON POST)은 그대로 두되 꺼져 있다(`notifiers.webhook.enabled: false`, `KTDM_ALERT_WEBHOOK_URL`). 켜면 전이(firing·escalated·
 resolved)마다 보낸다.

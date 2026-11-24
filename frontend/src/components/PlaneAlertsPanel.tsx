@@ -100,8 +100,8 @@ const NOTIFIER_NAME: Record<string, string> = { telegram: 'Telegram', webhook: '
 function deliveryText(notifiers: PlaneAlertsResponse['notifiers']): string {
   const delivering = notifiers.filter((notifier) => notifier.enabled);
   if (delivering.length === 0) {
-    const waiting = notifiers.find((notifier) => notifier.name === 'telegram');
-    const hint = waiting ? ` Telegram은 받는 chat(${waiting.url_env.split(' · ').pop()})이 비어 있어 보내지 않습니다.` : '';
+    const waiting = notifiers.find((notifier) => notifier.name === 'telegram' && notifier.disabled_reason);
+    const hint = waiting ? ` Telegram은 보내지 않습니다 — ${waiting.disabled_reason}.` : '';
     return `외부 발송은 꺼져 있습니다 — 이 화면, 상태 API, Manager 로그로만 보입니다.${hint}`;
   }
   return `외부 발송: ${delivering

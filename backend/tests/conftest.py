@@ -55,6 +55,17 @@ _REAL_GLOBAL_MUTATION_LOCK_MARKER = "real_global_mutation_lock"
 
 
 @pytest.fixture(autouse=True)
+def _no_real_telegram_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """수집 경보 Telegram 발송이 시험에서 실제 chat으로 나가지 않는다.
+
+    `main` import가 root `.env`를 `os.environ`에 올린다 — 운영 체크아웃 옆에서 pytest를 돌리면 PinVi 봇 토큰과
+    받는 chat이 실려 시험의 위험 경보가 실제로 발송될 수 있다. 발송을 시험하는 곳은 값을 직접 넣는다.
+    """
+    for name in ("PINVI_TELEGRAM_BOT_TOKEN_DEFAULT", "KTDM_ALERT_TELEGRAM_CHAT_ID"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _unprobed_remote_http_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """기존 Docker 대역 시험이 새 원격 HTTP 관측을 실제 운영 주소에 보내지 않는다.
 

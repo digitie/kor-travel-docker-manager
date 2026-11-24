@@ -217,6 +217,8 @@ def parse_config(document: Any) -> WatchdogConfig:
     notifiers = {"webhook": _check_mapping(notifiers_raw["webhook"], _WEBHOOK_KEYS, "notifiers.webhook"),
                  "telegram": _check_mapping(notifiers_raw["telegram"], _TELEGRAM_KEYS, "notifiers.telegram")}
     telegram = notifiers["telegram"]
+    if not 1 <= float(telegram["timeout_seconds"]) <= 30:
+        raise ConfigError("notifiers.telegram.timeout_seconds는 1~30이어야 합니다")
     if not 0 <= telegram["digest_hour_kst"] <= 23:
         raise ConfigError("notifiers.telegram.digest_hour_kst는 0~23이어야 합니다")
     if not str(telegram["api_base"]).startswith("https://"):
@@ -1330,9 +1332,9 @@ class PlaneWatchdog:
             with self._lock:
                 active_alerts = [alert.as_dict() for alert in self._book.active.values()]
             try:
-                self._telegram.maybe_digest(active_alerts)
+                self._telegram.reconcile(active_alerts, observed)
             except Exception:  # noqa: BLE001
-                logger.exception("plane watchdog telegram digest failed")
+                logger.exception("plane watchdog telegram delivery failed")
         self._maybe_capture(transitions, now)
         return transitions
 

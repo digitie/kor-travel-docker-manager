@@ -101,10 +101,12 @@ describe('PlaneAlertsPanel', () => {
     expect(await screen.findByTestId('plane-alerts-delivery')).toHaveTextContent(
       '외부 발송: Telegram(위험 즉시 · 주의 매일 09시(KST) 요약 · 같은 경보 360분 안 반복 억제)');
     cleanup();
-    mockedApiJson.mockResolvedValue({ ...BASE, notifiers: [BASE.notifiers[0], { ...telegram, enabled: false, configured: false }] });
+    mockedApiJson.mockResolvedValue({ ...BASE, notifiers: [BASE.notifiers[0], {
+      ...telegram, enabled: false, configured: false,
+      disabled_reason: 'KTDM_ALERT_TELEGRAM_CHAT_ID이(가) 비어 있습니다' }] });
     renderWithQueryClient(<PlaneAlertsPanel />);
     expect(await screen.findByTestId('plane-alerts-delivery')).toHaveTextContent(
-      'Telegram은 받는 chat(KTDM_ALERT_TELEGRAM_CHAT_ID)이 비어 있어 보내지 않습니다');
+      'Telegram은 보내지 않습니다 — KTDM_ALERT_TELEGRAM_CHAT_ID이(가) 비어 있습니다');
   });
 
   it('감시자가 멈추면 그 사실을 보인다', async () => {
