@@ -1565,7 +1565,7 @@ def _forward_harness(
     plane_resolved = {
         name: yaml.safe_load(
             re.sub(
-                r"\$\{[A-Z0-9_]+:-([^${}]*)\}",
+                r"\$\{[A-Z0-9_]+:?-([^${}]*)\}",
                 r"\1",
                 yaml.safe_dump(compose_document["services"][name]),
             )
@@ -1912,6 +1912,8 @@ def _forward_harness(
         "_query_shared_plane_locations": plane_query,
         "_inspect_plane_container": plane_container,
         "_inspect_image_reference_id": lambda _reference, *, label: plane_image_id,
+        # 운영 박스는 빌드하지 않는다(ADR-67) — 받아 둔 host 이미지(label·arch 맞음)로 둔다.
+        "_prebuilt_host_image_id": lambda _image: plane_image_id,
     }.items():
         monkeypatch.setattr(service, name, replacement)
     return SimpleNamespace(
@@ -4353,6 +4355,34 @@ def test_a_plane_that_differs_from_the_render_is_recreated(
     harness.service.rebuild_pinned_runtime()
 
     assert len(_plane_ups(harness.operations)) == 1
+
+
+def test_a_plane_image_that_was_not_loaded_refuses_the_rebuild_before_anything_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-67(적대 리뷰 A-1): 재구축은 slot을 멈추고 올린 **뒤에** plane을 수렴한다. 받은 이미지가 없을 때 그 자리에서 거부하면
+    Map·PinVi가 내려간 채 끝난다 — 그래서 plane을 다시 만들 것이면 무엇도 멈추거나 `in_progress`를 쓰기 전에 거부한다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    harness.live["plane_current"] = True
+    harness.live["plane_overrides"] = {harness.plane.daemon: {"image_id": "sha256:" + "d" * 64}}
+
+    def not_loaded(image: str) -> str:
+        raise DeploymentContractError(f"{image} is not on this host; operating hosts do not build it")
+
+    monkeypatch.setattr(harness.service, "_prebuilt_host_image_id", not_loaded)
+
+    with pytest.raises(DeploymentContractError, match="do not build"):
+        harness.service.rebuild_pinned_runtime()
+
+    # 읽기(컨테이너·plane inspect)뿐 — stop·up·run·migration 없음.
+    assert [op for op in harness.operations if op[0] not in {"container-inspect", "plane-inspect"}] == []
+    assert read_deploy_status(harness.status_path) is None
+
+    # plane이 render와 같으면(다시 만들 일이 없으면) 이미지를 보지 않는다 — 떠 있는 옛 이미지로 재구축이 끝까지 간다.
+    harness.live["plane_overrides"] = {}
+    harness.service.rebuild_pinned_runtime()
+    assert _plane_ups(harness.operations) == []
 
 
 def test_a_restarting_shared_daemon_fails_the_probe(

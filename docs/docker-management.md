@@ -411,13 +411,17 @@ build(`build`, `up/create/run --build`) 대상 서비스의 local context는 Man
 후보 이미지만 재사용한다.
 명시 build가 아닌 명령에서는 `build:` 절을 지워 보내므로 이미지가 없을 때 Compose가 운영
 디렉터리에서 조용히 빌드하지 않는다(처음 띄우는 서비스는 `--build`로 올린다). 공용 Dagster plane
-수렴(재구축·`dagster-plane converge`)은 render 이미지가 로컬에 없을 때 `--build`를 스스로 붙인다.
+수렴(재구축·`dagster-plane converge`)은 **빌드하지 않는다(ADR-67)** — render 이미지(`kor-travel-dagster-host:<내용 해시>`)가 이
+호스트에 없거나 내용 label(`io.kor-travel-docker-manager.dagster-host-content`)이 태그와 다르거나 arch가 호스트와 다르면 바꾸기 전에
+거부한다. 이미지는 개발 장비(WSL)에서 `scripts/dagster_host_image.py build`로 빌드해 `... load --ssh <host>`로 옮긴다
+([prod-deployment.md](prod-deployment.md) §8.2 "host 이미지 운반").
 plane을 다시 만들 때는 `up -d --no-deps` 전에 render의 `depends_on` 가운데 조건이
 `service_completed_successfully`인 직접 의존(오늘은 `kor-travel-dagster-storage-migrate`)을
 `run --rm --no-deps`로 먼저 돌린다(2026-11-23) — 실패하면 plane을 다시 만들지 않는다. 그래서 host 이미지가
 바뀐 설치의 storage 준비(Dagster migrate, Manager 소유 `job_ticks` 인덱스)는 `dagster-plane converge` 한 번으로 반영된다.
-`ktdctl ensure`는 그러지 않는다 — 설치로 `kor-travel-dagster-host` 태그가 바뀐 뒤에는
-`ktdctl ensure dagster --build`로 올린다(없으면 pull 오류로 컨테이너 변경 전에 실패한다). Concierge
+`ktdctl ensure`는 그러지 않는다 — 설치로 `kor-travel-dagster-host` 태그가 바뀐 뒤에는 개발 환경이면
+`ktdctl ensure dagster --build`로, 운영 박스면 옮긴 이미지로 `ktdctl ensure dagster`(빌드 없이)로 올린다(없으면 pull 오류로
+컨테이너 변경 전에 실패한다). Concierge
 `compose-boundary activate-concierge`도 `--no-build`로 재생성한다. 구현은
 `services/build_context_export.py`.
 

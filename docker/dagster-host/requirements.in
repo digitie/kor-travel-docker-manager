@@ -16,4 +16,4 @@ grpcio-health-checking==1.81.1
 protobuf==6.33.6
 
 # vendor의 정식 core wheel만 해시로 고정한다. extra/의존성 재해석은 추가하지 않는다.
-kor-travel-common==0.1.0.dev0
+kor-travel-common==0.1.0.dev2
