@@ -430,7 +430,7 @@ class FakeProbes:
         self.fds: list[pr.ContainerFds] = []
         self.tagged_source = lambda now: []
         self.tagged_error: str | None = None
-        self.tagged_calls: list[tuple[str, str, str, int]] = []
+        self.tagged_calls: list[tuple[str, str, str, float, int]] = []
 
     def host(self) -> str:
         return "test-host"
@@ -449,8 +449,8 @@ class FakeProbes:
     def schedule_runs(self, schedules):
         return {key: [] for key in schedules}
 
-    def tagged_job_runs(self, location, job, tag_key, limit):
-        self.tagged_calls.append((location, job, tag_key, limit))
+    def tagged_job_runs(self, location, job, tag_key, since, limit):
+        self.tagged_calls.append((location, job, tag_key, since, limit))
         if self.tagged_error:
             raise pr.ProbeError(self.tagged_error)
         return self.tagged_source(self.now)
@@ -793,7 +793,10 @@ def test_repository_config_carries_the_analytics_refresh_rule(config):
     ("critical_values", ["stale", "delayed"], "겹칩니다"),
     ("warning_values", [], "문자열 목록"),
     ("job", " ", "비울 수 없습니다"),
-    ("consecutive_runs", 0, "1 이상"),
+    ("consecutive_runs", 0, "1~"),
+    ("consecutive_runs", 23, "1~"),
+    ("ok_values", ["ok", "delayed"], "겹칩니다"),
+    ("active_hours", 0, "0보다"),
     ("warning_values", "delayed", "형식"),
 ])
 def test_analytics_refresh_config_is_validated(config, key, value, message):
@@ -864,10 +867,11 @@ def test_watchdog_escalates_resolves_and_marks_n150_not_applicable(config):
     payload = step(21)
     checks = {check["rule"]: check for check in payload["checks"]}
     assert checks["analytics_refresh_lag"]["state"] == "ok"
-    assert "정상(태그 없음)" in checks["analytics_refresh_lag"]["detail"]
+    assert "SUCCESS 정상(태그 없음)" in checks["analytics_refresh_lag"]["detail"]
     assert payload["alerts"] == []
     assert probes.tagged_calls[-1] == ("kor-travel-transport", "airport_collection_job",
-                                       "kortravel/analytics-refresh", 2 + wd._ANALYTICS_RUN_MARGIN)
+                                       "kortravel/analytics-refresh", probes.now - 2 * 3600,
+                                       2 + wd._ANALYTICS_RUN_MARGIN)
 
     payload = step(25)
     [alert] = payload["alerts"]
@@ -916,7 +920,8 @@ def test_tagged_job_runs_query_is_read_only_and_filters_location(monkeypatch):
         {"run_id": "a", "job": "airport_collection_job", "status": "SUCCESS", "created": 2.0, "updated": 3.0,
          "never_started": False, "location": "kor-travel-transport", "schedule": "s", "tag_value": "stale"},
         {"run_id": "b", "job": "airport_collection_job", "status": "SUCCESS", "created": 1.0, "updated": 1.5,
-         "never_started": False, "location": "kor-travel-transport", "schedule": "s", "tag_value": None},
+         "never_started": False, "location": "kor-travel-transport", "schedule": "s", "tag_value": None,
+         "retry_of": "p"},
         {"run_id": "c", "job": "airport_collection_job", "status": "SUCCESS", "created": 0.5, "updated": 0.7,
          "never_started": False, "location": "elsewhere", "schedule": None, "tag_value": "stale"},
     ])
@@ -927,11 +932,97 @@ def test_tagged_job_runs_query_is_read_only_and_filters_location(monkeypatch):
 
     client = pr.StorageClient(statement_timeout_seconds=7, runner=runner)
     runs = client.tagged_job_runs("kor-travel-transport", "airport_collection_job",
-                                  "kortravel/analytics-refresh", limit=10)
-    assert [(item.record.run_id, item.tag) for item in runs] == [("a", "stale"), ("b", None)]
+                                  "kortravel/analytics-refresh", since=100.25, limit=10)
+    assert [(item.record.run_id, item.tag, item.retry_of) for item in runs] == [("a", "stale", None), ("b", None, "p")]
+    assert "since=100.250" in seen["argv"]
+    assert "'dagster/parent_run_id', 'kortravelcommon/infra_retry_parent'" in seen["input"]
     assert seen["input"].startswith("BEGIN READ ONLY;\n")
     assert "t.key = :'tag_key'" in seen["input"] and "r.pipeline_name = :'job'" in seen["input"]
     for expected in ("location=kor-travel-transport", "job=airport_collection_job",
                      "tag_key=kortravel/analytics-refresh", "limit=10"):
         assert expected in seen["argv"]
     assert not any("password" in part.lower() for part in seen["argv"])
+
+
+def _tagged(run_id: str, at: float, tag: str | None, status: str = "SUCCESS", retry_of: str | None = None) -> pr.TaggedRun:
+    record = pr.RunRecord(run_id, "airport_collection_job", "kor-travel-transport", None, status, at - 300, at, False)
+    return pr.TaggedRun(record=record, tag=tag, retry_of=retry_of)
+
+
+def test_retry_child_inheriting_the_parent_tag_is_not_a_second_judgement(config):
+    # 재시도 run은 부모의 `kortravel/analytics-refresh`를 물려받는다(Common 재실행이 dagster/ 밖 태그를 복사).
+    # 부모 한 번의 stale + 물려받은 자식 stale을 연속 2회로 세면 거짓 위험이다.
+    rule = config.rule("analytics_refresh_lag")
+    now = _epoch("2026-11-24T08:00:00Z")
+    runs = [_tagged("child", now - 60, "stale", retry_of="parent"),
+            _tagged("parent", now - 600, "stale", status="FAILURE"),
+            _tagged("before", now - 1200, None)]
+    judgement = wd.judge_analytics_refresh(runs, now, rule)
+    assert judgement.state == "ok" and judgement.findings == ()
+    assert "경보 태그 1회" in judgement.detail and "건너뜀" in judgement.detail
+    # ok_values 태그(transport가 정상 판정도 남길 때)는 연속을 끊는다. 모르는 값은 건너뛴다.
+    assert wd.judge_analytics_refresh(
+        [_tagged("a", now - 60, "stale"), _tagged("b", now - 600, "ok"), _tagged("c", now - 1200, "stale")],
+        now, rule).state == "ok"
+    assert wd.judge_analytics_refresh(
+        [_tagged("a", now - 60, "stale"), _tagged("b", now - 600, "check_error"), _tagged("c", now - 1200, "stale")],
+        now, rule).state == "firing"
+
+
+def test_failures_after_an_alert_keep_it_instead_of_resolving(config):
+    # 지연 중 공항 run이 계속 실패하면(태그 없음) 판정 자료가 없다 — "해소"가 아니라 판정 보류로 경보를 유지한다.
+    probes = FakeProbes()
+    base = _epoch("2026-11-24T08:00:00Z")
+    probes.tagged_source = lambda now: [_tagged("s2", base - 60, "stale"), _tagged("s1", base - 600, "stale")]
+    watchdog = _watchdog(config, probes)
+    probes.now = base
+    watchdog.evaluate_once()
+    assert [alert["severity"] for alert in watchdog.status_payload()["alerts"]] == ["critical"]
+
+    failures = [_tagged(f"f{i}", base + 3 * 3600 - 600 * i, None, status="FAILURE") for i in range(10)]
+    probes.tagged_source = lambda now: failures
+    probes.now = base + 3 * 3600
+    watchdog.evaluate_once()
+    payload = watchdog.status_payload()
+    assert [alert["rule"] for alert in payload["alerts"]] == ["analytics_refresh_lag"]
+    check = {item["rule"]: item for item in payload["checks"]}["analytics_refresh_lag"]
+    assert check["state"] == "unavailable" and "판정 보류" in check["detail"]
+
+
+def test_missing_runs_resolve_on_a_plane_without_the_location_but_not_where_it_is_active(config):
+    base = _epoch("2026-11-24T08:00:00Z")
+    stale = [_tagged("s2", base - 60, "stale"), _tagged("s1", base - 600, "stale")]
+    active_transport = [pr.Instigator("sel", "SCHEDULE", "RUNNING", "airport_collection_job_schedule",
+                                      "kor-travel-transport", "*/5 * * * *", None, base)]
+
+    for instigators, expected_state, alerts_after in (
+        ([], "not_applicable", []),  # n150 — transport location이 없다: 남은 경보는 풀린다.
+        (active_transport, "unavailable", ["analytics_refresh_lag"]),  # job 이름 변경·job만 정지: 조용히 "해당 없음"이 되지 않는다.
+    ):
+        probes = FakeProbes()
+        probes.tagged_source = lambda now: stale
+        watchdog = _watchdog(config, probes)
+        probes.now = base
+        watchdog.evaluate_once()
+        assert len(watchdog.status_payload()["alerts"]) == 1
+        probes.tagged_source = lambda now: []
+        probes.instigator_source = lambda now, items=instigators: items
+        probes.now = base + 600
+        watchdog.evaluate_once()
+        payload = watchdog.status_payload()
+        assert {item["rule"]: item for item in payload["checks"]}["analytics_refresh_lag"]["state"] == expected_state
+        assert [alert["rule"] for alert in payload["alerts"]] == alerts_after
+
+
+def test_escalation_from_warning_to_critical_is_announced_once(config, monkeypatch):
+    probes = FakeProbes()
+    probes.tagged_source = lambda now: _airport_runs(now, _SCENARIO)
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setenv("KTDM_ALERT_WEBHOOK_URL", "https://hooks.invalid/secret-path")
+    watchdog = _watchdog(config, probes, sent)
+    for index in (25, 26, 27, 28, 29, 30):
+        probes.now = _airport_moment(index)
+        watchdog.evaluate_once()
+    events = [(event["event"], event["severity"]) for batch in sent for event in batch["events"]]
+    assert events == [("firing", "warning"), ("escalated", "critical"), ("resolved", "critical")]
+

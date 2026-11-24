@@ -87,6 +87,8 @@ _SCHEDULE_BACKFILL_LIMIT = 10
 _SCHEDULE_BACKFILL_REFRESH_SECONDS = 6 * 3600
 #: 사전집계 규칙이 연속 횟수 외에 더 읽는 run 수(태그 없는 실패 run을 건너뛰고도 연속을 셀 여유).
 _ANALYTICS_RUN_MARGIN = 8
+#: 질의가 job의 최근 종료 run 30행만 읽으므로(`plane_watchdog_probe._TAGGED_JOB_RUNS_SQL`) 연속 + 여유가 그 안에 들어야 한다.
+_ANALYTICS_MAX_CONSECUTIVE = 30 - _ANALYTICS_RUN_MARGIN
 
 
 # ---------------------------------------------------------------------------
@@ -123,8 +125,8 @@ _RULE_KEYS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "launch_failure_rate": {"enabled": bool, "severity": str, "window_minutes": (int, float),
                             "min_failures": int, "min_ratio": (int, float)},
     "analytics_refresh_lag": {"enabled": bool, "location": str, "job": str, "tag_key": str,
-                              "warning_values": list, "critical_values": list, "consecutive_runs": int,
-                              "active_hours": (int, float)},
+                              "warning_values": list, "critical_values": list, "ok_values": list,
+                              "consecutive_runs": int, "active_hours": (int, float)},
     "disk_usage": {"enabled": bool, "warning_used_percent": (int, float),
                    "critical_used_percent": (int, float), "paths": list},
     "io_pressure": {"enabled": bool, "severity": str, "full_avg300_percent": (int, float),
@@ -167,14 +169,17 @@ def _check_analytics_refresh(rule: Mapping[str, Any]) -> None:
     for key in ("location", "job", "tag_key"):
         if not str(rule[key]).strip():
             raise ConfigError(f"{where}.{key}: 비울 수 없습니다")
-    for key in ("warning_values", "critical_values"):
+    for key in ("warning_values", "critical_values", "ok_values"):
         values = rule[key]
-        if not values or not all(isinstance(value, str) and value.strip() for value in values):
+        if (not values and key != "ok_values") or not all(isinstance(value, str) and value.strip() for value in values):
             raise ConfigError(f"{where}.{key}: 비어 있지 않은 문자열 목록이어야 합니다")
-    if set(rule["warning_values"]) & set(rule["critical_values"]):
-        raise ConfigError(f"{where}: warning_values와 critical_values가 겹칩니다")
-    if int(rule["consecutive_runs"]) < 1:
-        raise ConfigError(f"{where}.consecutive_runs: 1 이상이어야 합니다")
+    groups = [set(rule[key]) for key in ("warning_values", "critical_values", "ok_values")]
+    if any(groups[i] & groups[j] for i in range(3) for j in range(i + 1, 3)):
+        raise ConfigError(f"{where}: warning_values·critical_values·ok_values가 겹칩니다")
+    if not 1 <= int(rule["consecutive_runs"]) <= _ANALYTICS_MAX_CONSECUTIVE:
+        raise ConfigError(f"{where}.consecutive_runs: 1~{_ANALYTICS_MAX_CONSECUTIVE}이어야 합니다")
+    if float(rule["active_hours"]) <= 0:
+        raise ConfigError(f"{where}.active_hours: 0보다 커야 합니다")
 
 
 def parse_config(document: Any) -> WatchdogConfig:
@@ -577,15 +582,23 @@ def evaluate_launch_failures(feed: Sequence[RunRecord], now: float, rule: Mappin
     )]
 
 
-#: transport가 공항 수집 run 태그에 싣는 사전집계 상태(transport #283 `AnalyticsRefreshHealth`). 기준값은
-#: transport `app/services/analytics_cache.py`가 정본이다 — 여기 문구는 화면 설명일 뿐 판정에 쓰지 않는다.
-_ANALYTICS_STATUS_TEXT: dict[str, tuple[str, str]] = {
-    "delayed": ("갱신 지연",
-                "사전집계에 반영되지 않은 가장 오래된 적재가 15분을 넘었습니다. 대시보드는 아직 직전 사전집계를 냅니다"),
-    "stale": ("갱신 멈춤",
-              "대시보드가 원본 계산(ICN 25~30초, 504 위험)으로 떨어졌습니다 — 미반영 적재 40분 이상 또는 사전집계 2시간 초과"),
-    "missing": ("사전집계 없음", "관측은 15분 넘게 쌓였는데 기본 사전집계가 없습니다"),
-}
+#: transport가 공항 수집 run 태그에 싣는 사전집계 상태의 화면 이름(transport #283 `AnalyticsRefreshHealth`). 상태의
+#: 기준(몇 분이면 delayed인지 등)은 transport `app/services/analytics_cache.py`가 정본이라 여기 다시 적지 않는다.
+_ANALYTICS_STATUS_LABEL: dict[str, str] = {"delayed": "갱신 지연", "stale": "갱신 멈춤", "missing": "없음"}
+_TAG_DISPLAY_LIMIT = 40
+
+
+@dataclass(frozen=True)
+class AnalyticsJudgement:
+    """사전집계 규칙 한 번의 판정.
+
+    state: ``firing``(경보) · ``ok``(최근 판정 run이 정상) · ``pending``(창 안 run이 판정 자료가 아니다 — 기존 경보 유지)
+    · ``absent``(창 안 run이 없다).
+    """
+
+    state: str
+    findings: tuple[Finding, ...] = ()
+    detail: str = ""
 
 
 def relevant_analytics_runs(runs: Sequence[TaggedRun], now: float, rule: Mapping[str, Any]) -> list[TaggedRun]:
@@ -598,48 +611,90 @@ def relevant_analytics_runs(runs: Sequence[TaggedRun], now: float, rule: Mapping
     return sorted(picked, key=lambda item: (item.record.created, item.record.updated), reverse=True)
 
 
-def evaluate_analytics_refresh(runs: Sequence[TaggedRun], now: float, rule: Mapping[str, Any]) -> list[Finding]:
+def _tag_text(tag: str | None) -> str:
+    return "" if tag is None else tag[:_TAG_DISPLAY_LIMIT]
+
+
+def judge_analytics_refresh(runs: Sequence[TaggedRun], now: float, rule: Mapping[str, Any]) -> AnalyticsJudgement:
     """transport 공항 수집 run의 사전집계 상태 태그가 최근 ``consecutive_runs``회 연속 경보인가.
 
     transport는 판정이 경보(delayed·stale·missing)일 때만 자기 run에 태그를 달고, run은 SUCCESS로 둔다
-    (transport #283 — 부분 성공을 FAILURE로 올리는 소음을 피했다). 그래서:
+    (transport #283 — 부분 성공을 FAILURE로 올리는 소음을 피했다). 최신 run부터:
 
-    - 태그 없이 SUCCESS로 끝난 run은 그 시점 판정이 정상(또는 판정 자체 실패)이므로 연속을 끊는다.
-    - 태그 없는 FAILURE·CANCELED run은 판정 자료가 아니라 건너뛴다 — 그 실패는 `consecutive_failures`·
-      `schedule_no_success`가 본다.
-    - 심각도는 연속 구간 최근 N회 중 **가장 낮은 것**: 위험은 최근 N회가 모두 위험 값일 때만. 한 번 튄 stale로
-      위험을 내지 않는다(오탐 억제).
-    - 설정에 없는 값은 주의로 센다(경보 태그를 모른다고 정상으로 읽지 않는다).
+    - 경보 값(`warning_values`·`critical_values`) 태그 → 연속에 센다.
+    - 태그 없이 SUCCESS로 끝난 run, 또는 `ok_values` 태그 → 그 시점 정상, 연속을 끊는다.
+    - 재시도 run(`retry_of`) → 건너뛴다. 재시도 run은 부모의 태그를 물려받아(Common 재실행이 `dagster/` 밖 태그를
+      복사한다) 그 태그가 자기 판정인지 알 수 없다 — 세면 한 번의 판정이 두 번이 되고, 끊으면 물려받은 경보를 정상으로 읽는다.
+    - 태그 없는 FAILURE·CANCELED, 모르는 태그 값 → 판정 자료가 아니라 건너뛴다(그 실패는 다른 규칙이 본다).
+
+    연속이 ``consecutive_runs``에 닿으면 경보, 끊는 run을 찾으면 정상, 둘 다 아니면(창 안이 건너뛴 run뿐) 판정 보류다
+    — 보류는 기존 경보를 풀지 않는다(지연 중 공항 run이 계속 실패해도 "해소"로 읽지 않는다). 심각도는 연속 구간 최근
+    N회 중 **가장 낮은 것**: 위험은 최근 N회가 모두 위험 값일 때만이다.
+
+    한계: transport가 판정 자체에 실패하거나 태그 기록에 실패한 run도 태그 없는 SUCCESS라 정상으로 읽힌다(transport가
+    판정마다 상태 태그를 남기면 `ok_values`로 구분된다 — 후속).
     """
 
+    relevant = relevant_analytics_runs(runs, now, rule)
+    if not relevant:
+        return AnalyticsJudgement("absent")
+    needed = int(rule["consecutive_runs"])
+    alert_values = set(rule["warning_values"]) | set(rule["critical_values"])
+    ok_values = set(rule["ok_values"])
+    streak: list[TaggedRun] = []
+    ended_by: TaggedRun | None = None
+    skipped = 0
+    for item in relevant:
+        if item.retry_of is not None:
+            skipped += 1
+        elif item.tag in alert_values:
+            streak.append(item)
+        elif item.tag in ok_values or (item.tag is None and item.record.status == "SUCCESS"):
+            ended_by = item
+            break
+        else:
+            skipped += 1
+    if len(streak) >= needed:
+        return AnalyticsJudgement("firing", (_analytics_finding(streak, rule),),
+                                  f"최근 판정 run {_tag_text(streak[0].tag)} · {_iso(streak[0].record.updated)}")
+    if ended_by is not None:
+        status = _tag_text(ended_by.tag) or "정상(태그 없음)"
+        detail = f"최근 판정 run {ended_by.record.status} {status} · {_iso(ended_by.record.updated)}"
+        if streak:
+            detail += f" · 그 뒤 경보 태그 {len(streak)}회(연속 {needed}회 미만)"
+        if skipped:
+            detail += f" · 판정 자료가 아닌 run {skipped}건 건너뜀"
+        return AnalyticsJudgement("ok", detail=detail)
+    return AnalyticsJudgement(
+        "pending",
+        detail=(f"판정 보류: 최근 {_human_duration(float(rule['active_hours']) * 3600)} 안 run {len(relevant)}건 중 판정 자료가 "
+                f"경보 태그 {len(streak)}회뿐입니다(태그 없는 실패·취소·재시도 run {skipped}건). 기존 경보는 유지합니다."))
+
+
+def _analytics_finding(streak: Sequence[TaggedRun], rule: Mapping[str, Any]) -> Finding:
     needed = int(rule["consecutive_runs"])
     critical_values = set(rule["critical_values"])
-    streak: list[TaggedRun] = []
-    for item in relevant_analytics_runs(runs, now, rule):
-        if item.tag is not None:
-            streak.append(item)
-            continue
-        if item.record.status == "SUCCESS":
-            break
-    if len(streak) < needed:
-        return []
-    head = streak[:needed]
-    severity = "critical" if all(item.tag in critical_values for item in head) else "warning"
+    severity = "critical" if all(item.tag in critical_values for item in streak[:needed]) else "warning"
     latest = streak[0]
-    label, meaning = _ANALYTICS_STATUS_TEXT.get(str(latest.tag), (str(latest.tag), "transport가 모르는 상태를 남겼습니다"))
+    tag = _tag_text(latest.tag)
+    label = _ANALYTICS_STATUS_LABEL.get(tag, tag)
     location, job = str(rule["location"]), str(rule["job"])
-    return [Finding(
+    return Finding(
         rule="analytics_refresh_lag", subject=f"{location}/{job}", severity=severity,
-        title=f"공항 통계 사전집계 {label}: {job} 최근 {len(streak)}회 연속({latest.tag})",
-        detail=(f"{meaning}. 공항 수집 run 자체는 SUCCESS일 수 있습니다 — 수집은 되는데 대시보드 묶음 갱신이 밀린 것입니다. "
-                f"transport 관리 화면 홈의 운영 상태(`/v1/transport/providers`의 `airport_analytics_cache`)와 run 로그의 "
-                f"`analytics_refresh_alert`(cache_refresh_failed·cache_refresh_skipped)를 확인하세요. "
-                f"run 태그 `{rule['tag_key']}`, 최근 run {latest.record.run_id}."),
-        evidence={"latest_status": latest.tag, "streak": len(streak),
-                  "statuses": [item.tag for item in streak[:10]],
+        title=f"공항 통계 사전집계 {label}: {job} 최근 {len(streak)}회 연속({tag})",
+        detail=(f"transport가 공항 수집 run에 사전집계 상태 `{tag}`를 남겼습니다(상태 기준은 transport 정본). 공항 수집 run "
+                "자체는 SUCCESS일 수 있습니다 — 수집은 되는데 대시보드 묶음 갱신이 밀린 것입니다. transport 관리 화면 홈의 "
+                "운영 상태(`/v1/transport/providers`의 `airport_analytics_cache`)와 run 로그의 `analytics_refresh_alert`"
+                f"(cache_refresh_failed·cache_refresh_skipped)를 확인하세요. 최근 run {latest.record.run_id}."),
+        evidence={"latest_status": tag, "streak": len(streak),
+                  "statuses": [_tag_text(item.tag) for item in streak[:10]],
                   "latest_run_id": latest.record.run_id, "latest_at": _iso(latest.record.updated),
                   "first_alert_at": _iso(streak[-1].record.updated)},
-    )]
+    )
+
+
+def evaluate_analytics_refresh(runs: Sequence[TaggedRun], now: float, rule: Mapping[str, Any]) -> list[Finding]:
+    return list(judge_analytics_refresh(runs, now, rule).findings)
 
 
 def evaluate_disks(observations: Sequence[DiskObservation], rule: Mapping[str, Any]) -> list[Finding]:
@@ -728,7 +783,7 @@ class Alert:
 
 @dataclass(frozen=True)
 class Transition:
-    event: str  # firing | resolved
+    event: str  # firing | escalated | resolved
     alert: Alert
 
 
@@ -751,8 +806,12 @@ class AlertBook:
         for key, item in current.items():
             if key in self.active:
                 alert = self.active[key]
+                escalated = _SEVERITIES.index(item.severity) > _SEVERITIES.index(alert.finding.severity)
                 alert.finding = item
                 alert.last_seen = now
+                if escalated:
+                    # 같은 경보가 주의→위험으로 오르면 새 경보는 아니지만 알린다(since 유지). 내려갈 때는 알리지 않는다.
+                    transitions.append(Transition("escalated", alert))
                 continue
             count = self._pending.get(key, 0) + 1
             if count < max(1, int(required.get(item.rule, 1))):
@@ -841,7 +900,8 @@ class Probes(Protocol):
     def instigators(self) -> list[Instigator]: ...
     def runs_since(self, since: float) -> list[RunRecord]: ...
     def schedule_runs(self, schedules: Sequence[tuple[str, str]]) -> dict[tuple[str, str], list[RunRecord]]: ...
-    def tagged_job_runs(self, location: str, job: str, tag_key: str, limit: int) -> list[TaggedRun]: ...
+    def tagged_job_runs(
+        self, location: str, job: str, tag_key: str, since: float, limit: int) -> list[TaggedRun]: ...
     def disks(self, paths: Sequence[str]) -> tuple[list[DiskObservation], list[str]]: ...
     def io_pressure(self) -> dict[str, dict[str, float]] | None: ...
     def dagster_fds(self) -> tuple[list[ContainerFds], list[str]]: ...
@@ -885,8 +945,8 @@ class HostProbes:
     def schedule_runs(self, schedules: Sequence[tuple[str, str]]) -> dict[tuple[str, str], list[RunRecord]]:
         return self._storage.schedule_runs(schedules, limit=_SCHEDULE_BACKFILL_LIMIT)
 
-    def tagged_job_runs(self, location: str, job: str, tag_key: str, limit: int) -> list[TaggedRun]:
-        return self._storage.tagged_job_runs(location, job, tag_key, limit=limit)
+    def tagged_job_runs(self, location: str, job: str, tag_key: str, since: float, limit: int) -> list[TaggedRun]:
+        return self._storage.tagged_job_runs(location, job, tag_key, since=since, limit=limit)
 
     def disks(self, paths: Sequence[str]) -> tuple[list[DiskObservation], list[str]]:
         return probe_module.read_disks(list(paths) or probe_module.default_disk_paths())
@@ -1088,7 +1148,7 @@ class PlaneWatchdog:
             "launch_failure_rate": evaluate_launch_failures(feed, now, self.config.rule("launch_failure_rate")),
         }
         if self.config.enabled("analytics_refresh_lag"):
-            produced["analytics_refresh_lag"] = self._analytics_round(now, checks)
+            produced["analytics_refresh_lag"] = self._analytics_round(now, checks, instigators, lookback)
         for rule in _STORAGE_RULES:
             if not self.config.enabled(rule):
                 checks[rule] = CheckState(rule, "disabled")
@@ -1103,35 +1163,41 @@ class PlaneWatchdog:
                                           f"{len(produced[rule])}건" if produced[rule] else "")
         return observed
 
-    def _analytics_round(self, now: float, checks: dict[str, CheckState]) -> list[Finding]:
+    def _analytics_round(
+        self, now: float, checks: dict[str, CheckState], instigators: Sequence[Instigator], lookback_hours: float,
+    ) -> list[Finding]:
         """transport 공항 수집 run의 사전집계 태그. 이 질의만 실패하면 이 규칙만 "확인 불가"다.
 
-        판정할 run이 없으면(이 plane에 그 location이 없다 — n150) "해당 없음"이다. run은 있는데 `active_hours` 안에
-        끝난 것이 없을 때도 같다 — job이 멈춘 것은 `location_tick_stall`·`schedule_no_success`가 본다.
+        창(`active_hours`) 안 run이 없을 때: 그 location의 schedule·sensor가 이 plane에서 활성이면 "확인 불가"(job 이름이
+        바뀌었거나 그 job만 멈췄다 — 조용히 "해당 없음"이 되지 않게), 아니면 "해당 없음"(n150 — transport가 없다).
         """
 
         assert self.config is not None and self._probes is not None
         rule = self.config.rule("analytics_refresh_lag")
         name = "analytics_refresh_lag"
+        location, job = str(rule["location"]), str(rule["job"])
+        window = float(rule["active_hours"]) * 3600
         try:
             runs = self._probes.tagged_job_runs(
-                str(rule["location"]), str(rule["job"]), str(rule["tag_key"]),
+                location, job, str(rule["tag_key"]), now - window,
                 int(rule["consecutive_runs"]) + _ANALYTICS_RUN_MARGIN)
         except ProbeError as exc:
             checks[name] = CheckState(name, "unavailable", str(exc))
             return []
-        relevant = relevant_analytics_runs(runs, now, rule)
-        if not relevant:
-            checks[name] = CheckState(
-                name, "not_applicable",
-                f"최근 {_human_duration(float(rule['active_hours']) * 3600)} 안에 끝난 "
-                f"{rule['location']}/{rule['job']} run이 없습니다")
+        judgement = judge_analytics_refresh(runs, now, rule)
+        if judgement.state == "absent":
+            active = {item.location for item in active_instigators(instigators, now, lookback_hours)}
+            text = f"최근 {_human_duration(window)} 안에 끝난 {location}/{job} run이 없습니다"
+            if location in active:
+                checks[name] = CheckState(name, "unavailable", f"{text} — location은 활성입니다(job 이름 변경·job 정지?)")
+            else:
+                checks[name] = CheckState(name, "not_applicable", text)
             return []
-        findings = evaluate_analytics_refresh(runs, now, rule)
-        latest = relevant[0]
-        state_text = f"최근 run {latest.tag or '정상(태그 없음)'} · {_iso(latest.record.updated)}"
-        checks[name] = CheckState(name, "firing" if findings else "ok", state_text)
-        return findings
+        if judgement.state == "pending":
+            checks[name] = CheckState(name, "unavailable", judgement.detail)
+            return []
+        checks[name] = CheckState(name, judgement.state, judgement.detail)
+        return list(judgement.findings)
 
     def _containers_by_location(self) -> dict[str, str]:
         return {location: item.container for item in self._fds for location in item.locations}
@@ -1226,8 +1292,8 @@ class PlaneWatchdog:
             self._evaluation_error = error
         for item in transitions:
             alert = item.alert.finding
-            if item.event == "firing":
-                logger.warning("PLANE ALERT firing [%s] %s — %s", alert.severity, alert.title, alert.detail)
+            if item.event in ("firing", "escalated"):
+                logger.warning("PLANE ALERT %s [%s] %s — %s", item.event, alert.severity, alert.title, alert.detail)
             else:
                 logger.info("PLANE ALERT resolved [%s] %s", alert.severity, alert.title)
         if self._notifier is not None:
@@ -1414,6 +1480,7 @@ __all__ = [
     "WatchdogConfig",
     "WebhookNotifier",
     "evaluate_analytics_refresh",
+    "judge_analytics_refresh",
     "evaluate_consecutive_failures",
     "evaluate_disks",
     "evaluate_fds",

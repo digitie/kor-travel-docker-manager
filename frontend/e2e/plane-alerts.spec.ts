@@ -84,7 +84,7 @@ test('수집 경보 패널: 공항 통계 사전집계 갱신 지연은 주의�
     summary: { state: 'firing', text: '경보 1건(심각 0, 주의 1)', critical: 0, warning: 1 },
     alerts: [analyticsAlert],
     checks: [{ rule: 'analytics_refresh_lag', label: '공항 통계 사전집계 갱신', state: 'firing',
-      detail: '최근 run delayed · 2026-11-24T05:12:00Z' }],
+      detail: '최근 판정 run delayed · 2026-11-24T05:12:00Z' }],
   };
   const backend = await mockBackend(page, testInfo, { get planeAlerts() { return payload; } });
   await login(page);

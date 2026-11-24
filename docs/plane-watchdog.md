@@ -68,22 +68,27 @@ transport #283(`8041dfd`)은 공항 수집 op가 수집·사전집계 갱신 뒤
 가장 오래된 적재 15분 이상 `delayed`, 40분 이상 또는 사전집계 2시간 초과 `stale`(대시보드가 원본 계산으로 떨어진다), 관측은 있는데
 사전집계 없음 `missing`. Manager 설정은 심각도 대응과 연속 횟수만 정한다.
 
-- **자료**: 설정한 (location, job)의 최근 종료 run과 그 태그 하나를 매 평가 읽는다(job 인덱스 역방향 30행 → 바깥에서 location 거름).
-  2026-11-24 실측 odroid 69 ms(`runs_pkey` 역방향 71행), n150 0.2 ms(`idx_runs_by_job`).
-- **연속**: 최신 run부터 태그 있는 run을 센다. 태그 없이 SUCCESS로 끝난 run(그 시점 정상, 또는 transport 판정 자체 실패)이 끊고,
-  태그 없는 FAILURE·CANCELED는 건너뛴다(그 실패는 `consecutive_failures`·`schedule_no_success`가 본다).
+- **자료**: 설정한 (location, job)의 `active_hours` 안에 갱신된 최근 종료 run과 그 태그 하나, 재시도 부모 태그를 매 평가 읽는다(job 최근
+  종료 run 30행 → 바깥에서 location 거름). 2026-11-24 실측 odroid 51 ms·n150 0.7 ms(둘 다 `idx_run_range`).
+- **연속**: 최신 run부터 본다. 경보 값 태그는 센다. 태그 없이 SUCCESS로 끝난 run이나 `ok_values` 태그가 끊는다(그 시점 정상). 재시도
+  run(`dagster/parent_run_id`·`kortravelcommon/infra_retry_parent`)은 건너뛴다 — Common 재실행이 `dagster/` 밖 태그를 복사해 부모의 경보
+  태그를 물려받으므로 자기 판정인지 알 수 없다. 태그 없는 FAILURE·CANCELED와 모르는 태그 값도 건너뛴다.
+- **판정 보류**: 창 안이 건너뛴 run뿐이면(지연 중 공항 run이 계속 실패 등) "확인 불가 — 판정 보류"이고 기존 경보를 풀지 않는다.
 - **심각도**: 최근 `consecutive_runs`회 중 가장 낮은 것 — 위험은 최근 N회가 모두 `critical_values`일 때만. 같은 경보 key가 주의에서
-  위험으로 오르면 새 경보가 아니라 그 경보의 심각도가 바뀐다(`since` 유지, webhook 전이 없음 — 화면·상태 API·지표에는 바로 보인다).
-  설정에 없는 태그 값은 주의로 센다.
-- **해당 없음**: `active_hours` 안에 끝난 그 job의 run이 없으면 "해당 없음"이다. n150 plane에는 transport가 없다(공항 job은 2026-10-14
-  odroid로 옮겼고 n150 storage에는 그 전 run만 남았다 — 2026-11-24 실측 3,268건, 마지막 10-14). odroid에서 job이 멈춘 것은
-  `location_tick_stall`·`schedule_no_success`가 본다.
+  위험으로 오르면 `since`는 그대로이고 `escalated` 전이(로그 WARNING·webhook)를 한 번 낸다.
+- **해당 없음**: `active_hours` 안에 끝난 그 job의 run이 없고 그 location의 schedule·sensor도 이 plane에서 활성이 아니면 "해당 없음"이다
+  (n150 — 공항 job은 2026-10-14 odroid로 옮겼고 n150 storage에는 그 전 run 3,268건만 남았다). location은 활성인데 run이 없으면(job
+  이름 변경·그 job만 정지) "확인 불가"로 보여 조용히 꺼지지 않는다.
+- **한계**: transport가 판정 자체에 실패하거나 태그 기록에 실패한 run도 태그 없는 SUCCESS라 정상으로 읽힌다. transport가 판정마다
+  상태 태그(`ok`·`check_error` 등)를 남기면 `ok_values`·건너뛰기로 구분된다 — transport 후속(그때 Common `_PARENT_ONLY_TAGS`에 이 태그를
+  넣으면 재시도 건너뛰기도 필요 없어진다).
 - **질의 실패**: 이 질의만 실패하면 이 규칙만 "확인 불가"이고 그 경보는 유지된다(다른 storage 규칙과 `storage_unreachable`은 그대로).
 - **providers API를 쓰지 않은 이유**: transport `/v1/transport/providers`의 `airport_analytics_cache.alerting`도 같은 판정이지만, 감시가
   형제 서비스의 HTTP 경로(odroid gateway·backend 포트, 호스트 바인딩)에 새로 기대게 되고 호출마다 transport DB 질의를 일으킨다.
   run 태그는 이미 쓰는 읽기 전용 storage 경로(비밀번호·DSN 없음) 안에 있고, 판정은 transport가 run 시점에 한 그대로다. 대가: run이
   멈추면 태그도 멈춘다 — 그때는 위 두 규칙이 울린다.
-- 화면 문구(상태별 설명)는 표시용일 뿐 판정에 쓰지 않는다. transport가 기준을 바꾸면 문구만 낡는다.
+- 상태의 기준(분·시간)은 transport `app/services/analytics_cache.py`가 정본이라 Manager 코드·설정에는 다시 적지 않는다(위 문단의 값은
+  #283 당시 인용).
 
 ## 4. storage 질의(읽기 전용)
 
@@ -96,7 +101,7 @@ primitive와 같은 경로, 비밀번호·DSN을 읽지 않는다). 모든 질�
 | instigator + 최근 tick 5개 | 매 평가 | `idx_tick_selector_timestamp` 역방향 | n150 7.7 ms(82 instigator) |
 | 종료 run 증분(`update_timestamp >= cursor - 5분`) | 매 평가 | `idx_run_range(status, update_timestamp)` + `idx_run_tags_run_idx` | n150 0.3 ms·odroid 12 ms(7분 창) |
 | 종료 run 시작 시 적재(`bootstrap_hours`) | 기동 1회 | 같음 | n150 48시간 239 ms·odroid 48시간 15 s(load 23) |
-| 사전집계 태그(설정한 job 최근 run) | 매 평가 | `runs_pkey`·`idx_runs_by_job` 역방향 + `idx_run_tags_run_idx` | odroid 69 ms·n150 0.2 ms |
+| 사전집계 태그(설정한 job 최근 run) | 매 평가 | `idx_run_range`(창 하한) + `idx_run_tags_run_idx` | odroid 51 ms·n150 0.7 ms |
 | 긴 창 schedule의 job 최근 run | 6시간 | `idx_run_tags(key, value)` → `idx_runs_by_job` 역방향 30행 | location 거르기를 EXISTS로 하면 odroid 22.6 s(semi-join) → 바깥 거르기로 바꿈 |
 
 odroid는 CPU 포화로 가벼운 질의도 수 초가 걸린다. `statement_timeout`·`bootstrap_hours`는 그 실측에 맞췄다.
@@ -145,7 +150,7 @@ PinVi·concierge fd 고갈은 재현되지 않아 원인이 미확정이다(가�
 Manager에는 기존 알림 발송 수단이 없다(Alertmanager는 두지 않기로 했다, ADR-58 결정 11 부근; Resend 이메일 연동은 소유자
 지시로 보류 #720). 그래서 기본 경로는 화면·상태 API·로그이고, 외부 발송은 **일반 webhook(JSON POST) 하나를 기본 꺼짐으로**
 둔다. 켜려면 `config/plane-watchdog.yml`의 `notifiers.webhook.enabled: true`와 root `.env`의 `KTDM_ALERT_WEBHOOK_URL`.
-전이(firing·resolved) 때만 보내고 같은 상태가 계속되면 다시 보내지 않는다. 실패는 재시도하지 않고 화면에 종류만 남긴다(URL은
+전이(firing·escalated·resolved) 때만 보내고 같은 상태가 계속되면 다시 보내지 않는다. 실패는 재시도하지 않고 화면에 종류만 남긴다(URL은
 비밀이라 남기지 않는다).
 
 소유자가 정할 것: 발송 채널(webhook 수신처·Telegram 등), code-server 자동 재시작 허용 여부.
