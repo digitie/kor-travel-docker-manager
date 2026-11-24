@@ -48,6 +48,16 @@ _MAP_SOURCE = "KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY"
 _MAP_KEY = "map-data-go-kr-key-sentinel"
 _DEDICATED_KEY = "pinvi-dedicated-key-sentinel"
 
+#: 예약 알림 planner — PinVi `definitions.py`의 `PinviNotificationPlannerResource`가 읽는 두 이름과, API
+#: (`app/core/config.py` `pinvi_telegram_planner_key`)가 읽는 키. URL은 API가 읽지 않는다.
+_PLANNER_KEY_ENV = "PINVI_TELEGRAM_PLANNER_KEY"
+_PLANNER_URL_ENV = "PINVI_NOTIFICATION_PLANNER_API_URL"
+_PINVI_API_PORT_ENV = "PINVI_API_PORT"
+_PLANNER_KEY = "planner-key-sentinel-6b1f0c93"
+#: planner 키를 받으면 안 되는 PinVi 서비스 — 키는 API와 code-server 둘에만 간다.
+_PLANNER_KEY_FREE_SERVICES = ("pinvi-web", "pinvi-admin-bootstrap", *_NON_EXECUTING_PINVI_DAGSTER)
+_TARGETS = _ROOT / "config" / "docker-targets.yml"
+
 #: `${NAME:?...}` — 값이 없으면 config 자체가 실패하는 필수 변수.
 _REQUIRED_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):\?")
 
@@ -76,7 +86,10 @@ def _render(*service_names: str, environment_update: dict[str, str]) -> dict[str
         key: value
         for key, value in os.environ.items()
         # 호스트 값이 새어 들어와 결과를 바꾸지 않게 한다.
-        if key not in {_DEDICATED_SOURCE, _MAP_SOURCE, _WEATHER_URL_ENV, "KTDM_DOCKER_NETWORK_MODE"}
+        if key not in {
+            _DEDICATED_SOURCE, _MAP_SOURCE, _WEATHER_URL_ENV, "KTDM_DOCKER_NETWORK_MODE",
+            _PLANNER_KEY_ENV, _PLANNER_URL_ENV, _PINVI_API_PORT_ENV,
+        }
         and not key.startswith("COMPOSE_")
     }
     environment.update(
@@ -156,3 +169,100 @@ def test_env_example_has_an_empty_dedicated_key_placeholder() -> None:
     assert [line for line in lines if line.startswith(f"{_DEDICATED_SOURCE}=")] == [
         f"{_DEDICATED_SOURCE}="
     ]
+
+
+# --------------------------------------------------------------------------- 예약 알림 planner
+
+
+def _api_listen_port(rendered: dict[str, Any]) -> str:
+    command = [str(item) for item in rendered[_PINVI_API]["command"]]
+    return command[command.index("--port") + 1]
+
+
+def test_planner_key_reaches_both_the_api_and_the_code_server() -> None:
+    """API는 키로 내부 경로를 열고 code-server는 같은 키를 헤더로 보낸다 — 한 root `.env` 값이 둘에 간다."""
+
+    rendered = _render(_CODE_SERVER, _PINVI_API, environment_update={_PLANNER_KEY_ENV: _PLANNER_KEY})
+    assert rendered[_CODE_SERVER]["environment"][_PLANNER_KEY_ENV] == _PLANNER_KEY
+    assert rendered[_PINVI_API]["environment"][_PLANNER_KEY_ENV] == _PLANNER_KEY
+
+
+def test_an_unset_planner_key_renders_as_an_empty_string_on_both() -> None:
+    """키가 없으면 둘 다 빈 문자열을 받는다(이름 누락이 아니다).
+
+    PinVi에서 빈 값은 꺼짐이다: API `_require_planner_key`는 기대값이 비면 404, code-server의 schedule 점검은 run을
+    띄우지 않고 asset은 `configured: False`로 no-op. 빈 문자열은 `str` 설정이라 기동도 막지 않는다.
+    """
+
+    rendered = _render(_CODE_SERVER, _PINVI_API, environment_update={})
+    assert rendered[_CODE_SERVER]["environment"][_PLANNER_KEY_ENV] == ""
+    assert rendered[_PINVI_API]["environment"][_PLANNER_KEY_ENV] == ""
+
+
+def test_planner_url_is_the_loopback_port_the_api_listens_on() -> None:
+    """URL은 pinvi-api가 실제로 듣는 포트(`--port`)와 registry `containers.pinvi-api.connection`에서 나온 값이다."""
+
+    rendered = _render(_CODE_SERVER, _PINVI_API, environment_update={})
+    url = rendered[_CODE_SERVER]["environment"][_PLANNER_URL_ENV]
+    assert url == f"http://127.0.0.1:{_api_listen_port(rendered)}"
+    # loopback은 둘 다 host network일 때만 같은 프로세스 공간을 가리킨다(production C6c도 host를 강제한다).
+    assert rendered[_CODE_SERVER]["network_mode"] == "host"
+    assert rendered[_PINVI_API]["network_mode"] == "host"
+    targets = yaml.safe_load(_TARGETS.read_text(encoding="utf-8"))
+    # 같은 target(pinvi)·같은 호스트 안 참조는 loopback이다(`docs/ports.md` 호스트 규칙).
+    assert _PINVI_API in targets["targets"]["pinvi"]["services"]
+    assert _CODE_SERVER in targets["targets"]["pinvi"]["services"]
+    assert url == targets["containers"][_PINVI_API]["connection"].replace("{host}", "127.0.0.1")
+
+
+def test_planner_url_follows_the_api_port_and_ignores_a_root_env_url() -> None:
+    """API 포트를 옮기면 URL도 옮긴다. root `.env`의 URL(PinVi `.env.example`의 bridge 이름 등)은 쓰이지 않는다."""
+
+    rendered = _render(
+        _CODE_SERVER,
+        _PINVI_API,
+        environment_update={_PINVI_API_PORT_ENV: "12899", _PLANNER_URL_ENV: "http://app-api:8000"},
+    )
+    assert _api_listen_port(rendered) == "12899"
+    assert rendered[_CODE_SERVER]["environment"][_PLANNER_URL_ENV] == "http://127.0.0.1:12899"
+
+
+def test_planner_env_is_only_where_pinvi_reads_it() -> None:
+    """키는 API와 code-server에만, URL은 code-server에만(API는 읽지 않는다). 다른 PinVi 서비스로 비밀을 넓히지 않는다."""
+
+    services = _source_services()
+    # 두 서비스가 **같은 원천** 하나를 읽어야 한다 — 한쪽만 다른 변수(폴백 포함)를 읽으면 값이 갈라져 API 404로 매분 run이
+    # 실패한다(점검은 404에서 fail-open).
+    for name in (_CODE_SERVER, _PINVI_API):
+        assert services[name]["environment"][_PLANNER_KEY_ENV] == f"${{{_PLANNER_KEY_ENV}:-}}", name
+    assert _PLANNER_URL_ENV in services[_CODE_SERVER]["environment"]
+    assert _PLANNER_URL_ENV not in services[_PINVI_API]["environment"]
+    for name in _PLANNER_KEY_FREE_SERVICES:
+        environment = services[name].get("environment") or {}
+        assert _PLANNER_KEY_ENV not in environment, name
+        assert _PLANNER_URL_ENV not in environment, name
+    for name, service in services.items():
+        if name in {_CODE_SERVER, _PINVI_API}:
+            continue
+        assert _PLANNER_KEY_ENV not in (service.get("environment") or {}), name
+
+
+def test_the_rendered_planner_key_is_scrubbed_from_failure_output() -> None:
+    """렌더 결과(`docker compose config`)가 실패 출력에 실려도 키 원문은 가림 규칙에 걸린다."""
+
+    from kor_travel_docker_manager.services.secret_scrub import redact_secret_text
+
+    rendered = _render(_CODE_SERVER, _PINVI_API, environment_update={_PLANNER_KEY_ENV: _PLANNER_KEY})
+    text = json.dumps(rendered)
+    assert _PLANNER_KEY in text
+    scrubbed = redact_secret_text(text, {_PLANNER_KEY_ENV: _PLANNER_KEY})
+    assert _PLANNER_KEY not in scrubbed
+    # URL은 비밀이 아니다 — 가리면 원인 진단이 망가진다.
+    assert "http://127.0.0.1:12801" in scrubbed
+
+
+def test_env_example_documents_the_planner_key_as_an_empty_placeholder() -> None:
+    lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if line.startswith(f"{_PLANNER_KEY_ENV}=")] == [f"{_PLANNER_KEY_ENV}="]
+    # URL은 파생값이라 `.env.example`에 두지 않는다 — 두면 재정의 가능한 것처럼 읽힌다.
+    assert not [line for line in lines if line.startswith(f"{_PLANNER_URL_ENV}=")]

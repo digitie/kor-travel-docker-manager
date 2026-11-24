@@ -1,3 +1,12 @@
+## 2026-11-24 — PinVi 예약 알림 planner env 배선
+
+- [x] compose: `PINVI_TELEGRAM_PLANNER_KEY`(pinvi-api·code-server)·`PINVI_NOTIFICATION_PLANNER_API_URL`(code-server, API 포트 파생), 가림 규칙 `PLANNER_KEY`.
+- [ ] **n150 적용(부모)**: root `.env`에 키 → Manager 설치 → compose에서 다시 만드는 경로로 pinvi-api·code-server 회전(`apply-core-candidate`는
+  env 보존이라 안 된다) → 두 컨테이너 env에 이름 존재 확인(값 출력 금지) → planner schedule tick이 SKIPPED/run 성공인지.
+- [ ] (리뷰 후속, 기존 결함) `VALKEYCLI_AUTH`(compose Map Valkey, `KOR_TRAVEL_MAP_VALKEY_PASSWORD` 값)가 가림 규칙에 걸리지 않아 inspect
+  env에 원문이 나온다. "민감 원천을 보간하는 env 이름은 민감해야 한다" 결박과 함께 별도 PR.
+- [ ] (리뷰 후속) planner 키 강도 강제(32자 이상) — PinVi staging/production validator가 자연스러운 자리. Manager 쪽 새 게이트는 ADR-50상 보류.
+
 ## 2026-11-24 — 공용 Dagster 런타임 보강(수집 실패 감사 §4 3·4·7·8·16)
 
 - [x] nofile soft 8192·hard 65536(daemon·webserver·code-server 다섯 — 누수 완화, 원인은 PinVi·Concierge, fd 경보는 경보 작업), run queue launch 재시도 10회×60초, StartRun 예산 proxy 300 < daemon 360(짧으면 재제출이 run을 중복 기동),
