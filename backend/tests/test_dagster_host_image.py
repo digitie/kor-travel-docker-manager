@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -44,13 +45,13 @@ def _script() -> ModuleType:
 # --- 운영 박스: converge가 쓰기 전에 보는 것 ---------------------------------------------------------------------------
 
 
-def _runner(inspect: tuple[int, str], host_arch: str = "x86_64"):
+def _runner(inspect: tuple[int, str], host_arch: str = "x86_64", stderr: str = ""):
     calls: list[list[str]] = []
 
     def run(command: list[str]) -> Any:
         calls.append(command)
         if command[:3] == ["docker", "image", "inspect"]:
-            return SimpleNamespace(returncode=inspect[0], stdout=inspect[1])
+            return SimpleNamespace(returncode=inspect[0], stdout=inspect[1], stderr=stderr)
         assert command[:2] == ["docker", "info"]
         return SimpleNamespace(returncode=0, stdout=host_arch + "\n")
 
@@ -67,10 +68,46 @@ def test_a_loaded_image_with_the_content_label_and_host_arch_is_accepted(host: s
 
 
 def test_an_image_that_is_not_on_the_host_is_refused_with_the_way_to_load_it() -> None:
-    run, _calls = _runner((1, ""))
+    run, _calls = _runner((1, ""), stderr="Error: No such image: kor-travel-dagster-host:x")
 
     with pytest.raises(DeploymentContractError, match="not on this host.*do not build.*load"):
         dagster_host_image.require_prebuilt_host_image(f"kor-travel-dagster-host:{_TAG}", run=run)
+
+
+def test_an_inspect_failure_that_is_not_absence_is_not_reported_as_absence() -> None:
+    """데몬 오류 등은 "옮겨라"로 오도하지 않는다 — 판독 실패로 거부한다(적대 리뷰 A-5)."""
+
+    run, _calls = _runner((1, ""), stderr="Cannot connect to the Docker daemon")
+
+    with pytest.raises(DeploymentContractError, match="^cannot inspect"):
+        dagster_host_image.require_prebuilt_host_image(f"kor-travel-dagster-host:{_TAG}", run=run)
+
+
+@pytest.mark.parametrize("environment,problems", [
+    ({}, []),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": "4", "KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW": "4",
+      "KOR_TRAVEL_DAGSTER_DAEMON_POOL_TIMEOUT_SECONDS": "10", "KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING": "1",
+      "KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS": "180"}, []),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": ""}, ["KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE must be"]),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": "11"}, ["KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE must be"]),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": "0004"}, ["KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE must be"]),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": "+4"}, ["KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE must be"]),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW": "7"}, ["must be at most 10"]),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": "6", "KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW": "4"}, []),
+    ({"KOR_TRAVEL_DAGSTER_DAEMON_POOL_TIMEOUT_SECONDS": "21"}, ["TIMEOUT_SECONDS must be"]),
+    ({"KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING": "yes"}, ["PRE_PING must be one of 0, 1"]),
+    ({"KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING": ""}, ["PRE_PING must be one of 0, 1"]),
+    ({"KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS": "240"}, ["RELOAD_SECONDS must be one of 60, 180"]),
+])
+def test_common_env_values_the_wrapper_would_reject_are_named(
+    environment: dict[str, str], problems: list[str]
+) -> None:
+    """Common wrapper가 종료 코드 2로 거절할 값을 다시 만들기 전에 잡는다(적대 리뷰 B-2). 규칙은 wheel 원문과 같다."""
+
+    found = dagster_host_image.common_env_violations(environment)
+    assert len(found) == len(problems)
+    for message, expected in zip(found, problems, strict=True):
+        assert expected in message
 
 
 @pytest.mark.parametrize("label", ["<no value>", "", "0a02ea5b1d52d1f9"])
@@ -277,25 +314,54 @@ def test_a_loaded_image_that_differs_from_the_receipt_is_refused(line: str, matc
         script.verify_loaded(_receipt(script), line)
 
 
-def test_load_streams_the_tar_over_ssh_and_checks_the_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    script = _script()
-    tar = _archive(tmp_path / "image.tar")
-    receipt = {**_receipt(script), "tar_sha256": hashlib.sha256(tar.read_bytes()).hexdigest()}
-    Path(f"{tar}.json").write_text(json.dumps(receipt), encoding="utf-8")
+def _ssh_runner(script: ModuleType, monkeypatch: pytest.MonkeyPatch, host_arch: str = "x86_64"):
     calls: list[tuple[list[str], bool]] = []
 
     def run(command: list[str], **kwargs: Any) -> Any:
         calls.append((command, "stdin" in kwargs))
-        return SimpleNamespace(returncode=0, stdout=_inspect_line())
+        stdout = host_arch + "\n" if command[2:4] == ["docker", "info"] else _inspect_line()
+        return SimpleNamespace(returncode=0, stdout=stdout)
 
     monkeypatch.setattr(script.subprocess, "run", run)
+    return calls
+
+
+def _receipted_tar(script: ModuleType, tmp_path: Path) -> Path:
+    tar = _archive(tmp_path / "image.tar")
+    receipt = {**_receipt(script), "tar_sha256": hashlib.sha256(tar.read_bytes()).hexdigest()}
+    Path(f"{tar}.json").write_text(json.dumps(receipt), encoding="utf-8")
+    return tar
+
+
+def test_load_streams_the_tar_over_ssh_and_checks_the_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _script()
+    tar = _receipted_tar(script, tmp_path)
+    calls = _ssh_runner(script, monkeypatch)
 
     assert script.load("ops-host", tar)["image_id"] == _ID
-    assert calls[0] == (["ssh", "ops-host", "docker", "load"], True)
-    assert calls[1][0][:4] == ["ssh", "ops-host", "docker", "image"]
-    assert len(calls) == 2  # 컨테이너·compose는 건드리지 않는다
+    # ssh는 인자를 원격 셸 한 줄로 잇는다 — Go template은 따옴표로 한 인자여야 한다.
+    assert calls == [
+        (["ssh", "ops-host", "docker", "info", "--format", "'{{.Architecture}}'"], False),
+        (["ssh", "ops-host", "docker", "load"], True),
+        (["ssh", "ops-host", "docker", "image", "inspect", "--format",
+          shlex.quote(script._REMOTE_INSPECT), f"kor-travel-dagster-host:{_TAG}"], False),
+    ]  # 컨테이너·compose는 건드리지 않는다
+
+
+def test_load_refuses_a_host_of_the_other_arch_before_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """amd64 tar를 odroid(aarch64)에 넣으면 같은 태그가 잘못된 이미지로 옮겨 간다 — load 전에 멈춘다(적대 리뷰 A-2·B-5)."""
+
+    script = _script()
+    tar = _receipted_tar(script, tmp_path)
+    calls = _ssh_runner(script, monkeypatch, host_arch="aarch64")
+
+    with pytest.raises(script.HostImageError, match="is linux/arm64 but the tar is linux/amd64"):
+        script.load("odroid", tar)
+    assert [command[2:4] for command, _stdin in calls] == [["docker", "info"]]
 
 
 def test_load_refuses_a_tar_that_differs_from_its_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

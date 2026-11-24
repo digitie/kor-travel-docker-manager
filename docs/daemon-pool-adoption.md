@@ -10,7 +10,8 @@ PR511 병합 뒤 이 PR의 base를 main으로 정산했다. 구현 검증과 운
 
 ## 정식 wheel과 고정 설치
 
-현재 source는 Common ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32의 정식 wholewheel63,151B,
+(2026-11-24 이후 현재 source는 아래 "Common py 0.1.0.dev2 채택" 절이다. 이 절은 그 전 이력이다.)
+당시 source는 Common ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32의 정식 wholewheel63,151B,
 SHA256 1abf0547a7b7fbe76284b69c375e83d953788b83a05fbd6720957a869f865b53이다.
 독립 archive 재빌드가 byte동일하며 package17개(Python16/py.typed1), RECORD nonself22행을 확인했다.
 기존 daemon CLI/plugin과 새 kor-travel-dagster-webserver가 함께 들어간다.
@@ -190,22 +191,27 @@ webserver에만 `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING`(기본 1, 소유자
 **접속 예산 — 공용 role `kor_travel_dagster_shared_app` `CONNECTION LIMIT 45`.** 이 role 하나를 daemon·webserver·run worker(code-server의
 자식)·daemon의 임시 start_run instance가 함께 쓴다. `max_connections`(100)보다 이 한도가 먼저 걸린다.
 
-| 몫 | 상주(유휴) | 상한 |
+| 몫 | 상주(유휴) | 바쁜 시간 동시(가정) |
 |---|---|---|
-| daemon primary QueuePool | dev0 6 → **dev2 12** | dev0 12 → **dev2 24** |
-| webserver(`optimize_for_webserver` pool_size 1·overflow 20 ×3 engine) | 3 | 이론 63(동시 요청 수에 묶임 — 운영 관측 수 개) |
-| run worker(NullPool — 쓰는 동안만) | 0 | n150 전역 6 run × 1~2 ≈ 12, odroid 5 run ≈ 10 |
-| daemon 임시 start_run instance(NullPool) | 0 | launch 동안 수 개 |
+| (a) daemon primary QueuePool | dev0 6 → **dev2 12** | dev0 12 → **dev2 24**(상한) |
+| (b) webserver(`optimize_for_webserver` pool_size 1·overflow 20 ×3 engine) | 3 | 6(이론 상한 63 — 동시 요청 수에 묶임) |
+| (c) run worker(NullPool — 쓰는 동안만) | 0 | n150 전역 6 run × 2 ≈ 12, odroid 5 run ≈ 10 |
+| (d) daemon 임시 start_run instance(NullPool) | 0 | 3 |
+| (e) code-server의 sensor·schedule 평가가 `context.instance`를 쓸 때(NullPool) | 0 | 수 개 — 세지 않음 |
+| (f) multiprocess executor의 step 하위 프로세스 | 0 | run당 2를 넘을 수 있음 — 세지 않음 |
 
 - 상주: dev0 약 9(2026-11-24 n150 실측 이 role 연결 8, 전부 idle) → dev2 약 15. 격리 PG 실측(아래) daemon+webserver 상주 9는 빈
   workspace라 primary pool이 덜 찬 값이다.
-- 바쁜 시간 동시 최악: 24 + 6 + 12 + 3 ≈ **45** — 한도에 닿는다. 넘치면 PostgreSQL이 새 접속을 `too many connections for role`로
+- 바쁜 시간 동시 최악: (a)24 + (b)6 + (c)12 + (d)3 ≈ **45** — 한도에 닿고, (e)(f)를 세면 넘을 수 있다. 넘치면 PostgreSQL이 새 접속을 `too many connections for role`로
   거절하고 그때 접속하던 쪽(run worker면 run 실패)이 맞는다. daemon pool이 24를 모두 쓰는 것은 sensor·schedule worker(각 4)와
   run coordinator·backfill·heartbeat가 한 engine에 동시에 몰릴 때뿐이라 흔하지 않지만, 0이라고 할 수 없다.
 - 그래서 기본값(24)은 Common 기본을 따르되 **올리지 않는다.** 한도를 넘는 징후(role 연결 수가 40 근처에 머묾, `too many connections`)가
-  보이면 ① `KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE=3`·`_MAX_OVERFLOW=3`(상한 18)으로 낮추거나 ② db-init의 role 한도를 올린다 —
-  n150 전체 client backend 36/100(2026-11-24), 이 role 몫 8을 빼면 다른 DB가 약 28이므로 60까지는 여유가 남는다. ②는 db-init
-  (`ensure dagster`)을 다시 도는 운영 변경이라 소유자 결정이다.
+  보이면 ① `KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE=3`·`_MAX_OVERFLOW=3`(상한 18)으로 낮추거나 ② role 한도를 올린다. ②의 근거
+  "n150 전체 client backend 36/100(2026-11-24), 이 role 몫 8을 빼면 다른 DB 약 28"은 **지금 사용량**이지 다른 DB들의 상한이
+  아니다. 또 n150은 `rehearsal/rebuildable`이라 `ensure dagster`(db-init)가 거부되고, 손으로 한 `ALTER ROLE`은 다음 db-init이 45로
+  되돌린다 — ②는 db-init의 `CONNECTION LIMIT` 값 자체를 바꾸는 PR과 그 적용 경로를 함께 정하는 소유자 결정이다.
+- 관측 수단이 아직 없다 — 이 role의 연결 수 지표·경보(수집 감시 또는 Prometheus)는 후속이다(tasks.md). 그 전까지는 배포 뒤
+  `pg_stat_activity`를 손으로 본다.
 
 **실제 SDK 확인(WSL 격리 PG, 운영 무관).** 새 이미지로 storage migrate → daemon(4·4·10) → webserver(pre-ping 1)를 띄워 daemon stderr
 `daemon 연결 풀: primary engine 3개 각 pool_size=4 max_overflow=4 pool_timeout=10s`, webserver stderr `webserver storage pre-ping: 켜짐`,

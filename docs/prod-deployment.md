@@ -1008,7 +1008,12 @@ python3 scripts/dagster_host_image.py load --ssh <host> ~/ktdm-dagster-host-dist
 
 `load`는 이미지만 넣는다(컨테이너·compose는 건드리지 않는다). 스크립트 없이 하려면 `ssh <host> docker load < <tar>` 뒤
 `docker image inspect --format '{{.Architecture}} {{index .Config.Labels "io.kor-travel-docker-manager.dagster-host-content"}}' kor-travel-dagster-host:<tag>`가
-호스트 arch와 태그를 내야 한다. 그 다음 위 ①~⑥(`--dry-run`의 `images`가 `ready`인지 먼저 본다).
+호스트 arch와 태그를 내야 한다.
+
+순서는 **⓪ 이미지 운반 → ① Manager 설치 → ② `--dry-run`(`images`가 전부 `ready`) → ③~⑥**이다. 운반을 설치보다 먼저 한다 —
+설치 뒤 운반 전에 pinned 재구축이 돌면 plane 재생성 단계에 닿기 **전에**(아무것도 멈추기 전) 같은 사유로 거부된다(`_require_shared_plane_images_ready`).
+odroid도 같다(arm64 tar, odroid는 Codex 몫). odroid가 `ensure dagster`로 plane을 올리는 경우에도 빌드하지 않는다 — tar를 받은 뒤
+`ensure dagster`(`--build` 없이)이고, 그 경로는 arch만 보고(T-MGR-05 preflight) 내용 label은 보지 않는다.
 
 ```bash
 # 보기만 한다(아무것도 바꾸지 않고 종료 코드는 항상 0). 서비스별 차이(이미지·env 이름·파일 digest 떠 있는 값 != render 값)와 health(한 번 관측)를 낸다.
@@ -1116,8 +1121,8 @@ geo·weather·transport의 `host: odroid` 전환(registry, 2026-10-14~15)도 이
    전부; 읽기 전용 설정 bind는 보지 않는다), 호스트별 `KTDM_PROD_URL_*`(`_DAGSTER`는 odroid
    plane host), `KOR_TRAVEL_DAGSTER_UI_PASSWORD`, geo/weather/transport 비밀 — `scp`로 0600/root(비밀번호 SSH 단계에서는 보내지 않는다)
    → `ktdctl targets validate`.
-10. **arch 실측**: `docker info --format '{{.Architecture}}'`=aarch64, `docker image inspect … .Architecture`=arm64, dagster-host 빌드 +
-    `pip check`, `imresamu/postgis` 안 `pg_isready` 경로 존재, base digest가 manifest list인지(`buildx imagetools inspect`),
+10. **arch 실측**: `docker info --format '{{.Architecture}}'`=aarch64, `docker image inspect … .Architecture`=arm64, dagster-host는 WSL에서 arm64로 빌드해
+    `scripts/dagster_host_image.py load --ssh`로 받는다(ADR-67 — odroid에서 빌드하지 않는다; `pip check`는 빌드가 한다), `imresamu/postgis` 안 `pg_isready` 경로 존재, base digest가 manifest list인지(`buildx imagetools inspect`),
     `postgis_full_version()` major.minor == n150.
 11. **NTP ⑤ — 부팅 순서 결박(1의 재부팅 2회 PASS 뒤에만, Manager 설치 뒤)**: `systemd-time-wait-sync.service` enable +
     `docker.service`·`ktdm-backend.service` drop-in `After=time-sync.target` → 재부팅 1회 → 컨테이너 전부 Up ∧ Manager `/health` ∧
@@ -1213,7 +1218,7 @@ allow-list라 `.14`를 더하면 된다.
 - [ ] 주소: DHCP 임대 갱신 뒤에도 `.13` 유지(§14-20 추천 안 OPNsense 예약 기준 — static을 택하면 `nmcli … con show`의 `ipv4.method manual` 확인으로 대체)
 - [ ] SMB 노출 없음: `testparm -s`·`net usershare info --long`에 `/mnt/media/kor-travel`·`/home/digitie/kor-travel-*` 없음; digitie SMB
       세션에서 transport `.env.prod`·root `.env`가 읽히지 않음(root 0600)
-- [ ] arch: `uname -m`·이미지 arch 일치·dagster-host 빌드·`pip check`
+- [ ] arch: `uname -m`·이미지 arch 일치·dagster-host arm64 tar 운반(`load --ssh`, ADR-67)
 - [ ] n150 geo-api·transport backend·weather-api가 **stop인 상태에서** Map geocode·transport export·PinVi ETL 각 1 run 성공 + PinVi trip
       view weather card 비어 있지 않음; odroid access log peer `192.168.1.14`, odroid PG `pg_stat_activity` application_name; Map→geo
       **키 경로** 200(면제 아님)

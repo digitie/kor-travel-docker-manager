@@ -2079,12 +2079,15 @@ concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째
    compose 태그와 같아야 하고, 이미지에 내용 label `io.kor-travel-docker-manager.dagster-host-content=<태그>`를 붙이며, docker-archive
    tar와 receipt(태그·platform·config digest·layer digest·tar sha256)를 쓴다. 설치된 release root(`/opt/kor-travel-docker-manager`)가
    있는 호스트에서는 거부한다.
-2. 운반은 `... load --ssh <host> <tar>` — tar sha256을 receipt와 대조한 뒤 `ssh <host> docker load`, 받은 쪽의 platform·내용 label·
+2. 운반은 `... load --ssh <host> <tar>` — tar sha256을 receipt와 대조하고 받는 쪽 arch가 tar의 platform인지 본 뒤(다르면 load 전에
+   거부 — 맞던 이미지를 같은 태그로 덮지 않게) `ssh <host> docker load`, 받은 쪽의 platform·내용 label·
    layer digest가 receipt와 같아야 성공이다. 컨테이너는 건드리지 않는다. 예전에 개발 장비 이미지를 `docker save | ssh docker load`로
    옮긴 방식(journal-archive-02)을 검증과 함께 정식화한 것이다. ghcr push/pull은 쓰지 않는다(레지스트리 없음 — ADR-58 결정 9).
 3. plane 수렴은 빌드하지 않는다. `run`·`up` 전에 render의 이미지 전부(plane과 storage migrate one-shot)가 이 호스트에 있고 내용 label이
-   태그와 같고 arch가 Docker 데몬 arch와 같아야 한다 — 아니면 아무것도 바꾸기 전에 거부한다. `up`에는 `--no-build`를 싣는다.
-   `converge --dry-run`은 재생성할 것일 때 이미지마다 `ready`/거부 사유를 `images`에 싣는다.
+   태그와 같고 arch가 Docker 데몬 arch와 같아야 한다. 같은 자리에서 render env 가운데 Common wrapper가 거절할 값(빈 값·범위 밖
+   pool env·pre-ping·reload)도 거부한다. `up`에는 `--no-build`를 싣는다. pinned 재구축은 slot을 멈추고 올린 **뒤에** plane을
+   수렴하므로, plane을 다시 만들 것이면 같은 검사를 **무엇도 멈추거나 `in_progress`를 쓰기 전에** 한 번 더 한다(적대 리뷰 — 늦은
+   거부는 Map·PinVi를 내린 채 끝낸다). `converge --dry-run`은 재생성할 것일 때 서비스마다 `ready`/거부 사유를 `images`에 싣는다.
 
 ### 근거
 
@@ -2096,7 +2099,7 @@ concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째
 
 ### 결과(긍정)
 
-- 운영 박스의 plane 수렴이 PyPI·CPU·IO를 쓰지 않는다. 받은 이미지가 맞지 않으면 바꾸기 전에 멈춘다(반쯤 바꾼 plane이 없다).
+- 운영 박스의 plane 수렴이 PyPI·CPU·IO를 쓰지 않는다. 받은 이미지가 맞지 않으면 converge·재구축 모두 무엇도 바꾸기 전에 멈춘다.
 - arm64(odroid) 이미지도 같은 스크립트로 WSL에서 교차 빌드한다(qemu binfmt).
 
 ### 결과(부정)·잃는 것

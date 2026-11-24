@@ -79,7 +79,10 @@ from kor_travel_docker_manager.services.capabilities import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
 )
 from kor_travel_docker_manager.services.compose_references import reference_compose_path
-from kor_travel_docker_manager.services.dagster_host_image import require_prebuilt_host_image
+from kor_travel_docker_manager.services.dagster_host_image import (
+    common_env_violations,
+    require_prebuilt_host_image,
+)
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRole,
     DatabaseRuntime,
@@ -5525,6 +5528,9 @@ class ComposeService:
             # `stop`에 들지 않으므로 떠 있으면 migration 중 run을 띄운다.
             self._require_retired_dagster_containers_stopped(topology)
             self._require_shared_plane_releases_own_targets(topology, runtime_transaction)
+            # plane을 다시 만들 것이면 그 이미지가 이 호스트에 받아져 있어야 한다(ADR-67 — 운영 박스는 빌드하지 않는다).
+            # 아래 두 경로 모두 slot을 멈추거나 올린 **뒤에** plane을 수렴하므로, 거부는 여기서 무엇도 바꾸기 전에 한다.
+            self._require_shared_plane_images_ready(topology, runtime_transaction)
 
             if (
                 not explicit
@@ -5854,6 +5860,32 @@ class ComposeService:
             )
         self._wait_shared_plane_locations(plane, services, wanted, **policy)
 
+    def _require_shared_plane_images_ready(
+        self,
+        topology: RuntimeTopology,
+        runtime_transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """재구축이 공용 plane을 다시 만들 것이면, 쓸 이미지가 받아져 있는지 **바꾸기 전에** 본다(읽기 전용, ADR-67).
+
+        `_converge_shared_dagster_plane`과 같은 판정(멈춘 daemon은 멈춘 채 — webserver만)으로 재생성 대상을 정하고,
+        그 대상과 one-shot의 이미지를 `_recreate_shared_plane`과 같은 검사에 건다. plane이 render와 같으면 보지 않는다.
+        늦은 검사(`_recreate_shared_plane` 안)는 그대로 둔다 — 그 사이 무엇이 바뀌어도 빌드하지 않고 거부한다.
+        """
+
+        if not topology.shared_dagster_slots:
+            return
+        plane, services, _locations = self._frozen_shared_plane(runtime_transaction)
+        daemon = self._inspect_plane_container(
+            installed_container_name(plane.daemon), label=plane.daemon
+        )
+        keep_stopped = daemon is not None and not daemon["running"] and not daemon["restarting"]
+        if self._shared_plane_current(plane, services, keep_daemon_stopped=keep_stopped):
+            return
+        names = (plane.webserver,) if keep_stopped else plane.services
+        self._require_prebuilt_plane_images(
+            services, (*_completed_oneshot_dependencies(services, names), *names)
+        )
+
     def _recreate_shared_plane(
         self, plane: SharedDagsterPlane, services: Mapping[str, Any], *,
         transaction: ComposeTransactionSnapshot,
@@ -5891,10 +5923,18 @@ class ComposeService:
     def _require_prebuilt_plane_images(
         self, services: Mapping[str, Any], names: Sequence[str]
     ) -> dict[str, str]:
-        """`names`의 render 이미지가 전부 이 호스트에 받아 둔 host 이미지인가 — image 참조 → image ID. 아니면 거부한다."""
+        """`names`의 render 이미지가 전부 이 호스트에 받아 둔 host 이미지인가 — image 참조 → image ID. 아니면 거부한다.
+
+        같은 자리에서 render env 가운데 이미지의 Common wrapper가 거절할 값(빈 값·범위 밖)도 거부한다 — 다시 만든 뒤
+        종료 코드 2로 재시작만 반복하는 plane을 만들지 않는다(`dagster_host_image.common_env_violations`).
+        """
 
         verified: dict[str, str] = {}
         for name in names:
+            environment = services[name].get("environment") or {}
+            violations = common_env_violations(environment if isinstance(environment, Mapping) else {})
+            if violations:
+                raise DeploymentContractError(f"{name}: " + "; ".join(violations))
             image = services[name].get("image")
             if not isinstance(image, str) or not image:
                 raise DeploymentContractError(f"{name}: render has no image reference")
@@ -5909,21 +5949,17 @@ class ComposeService:
     def _plane_image_readiness(
         self, plane: SharedDagsterPlane, services: Mapping[str, Any]
     ) -> dict[str, str]:
-        """dry-run 보고용 — plane과 그 one-shot의 이미지마다 `ready` 또는 거부 사유(재생성하면 그 사유로 멈춘다)."""
+        """dry-run 보고용 — plane과 그 one-shot 서비스마다 `ready` 또는 거부 사유(이미지·Common env; 재생성하면 그 사유로 멈춘다)."""
 
         names = (*_completed_oneshot_dependencies(services, plane.services), *plane.services)
         readiness: dict[str, str] = {}
         for name in names:
-            image = services[name].get("image")
-            key = image if isinstance(image, str) and image else name
-            if key in readiness:
-                continue
             try:
                 self._require_prebuilt_plane_images(services, (name,))
             except DeploymentContractError as exc:
-                readiness[key] = str(exc)
+                readiness[name] = str(exc)
             else:
-                readiness[key] = "ready"
+                readiness[name] = "ready"
         return readiness
 
     @invalidates_status
@@ -5948,8 +5984,8 @@ class ComposeService:
 
         ``dry_run``이면 같은 검사를 거쳐 무엇이 다른지(`would_recreate`·`current`·`current_not_healthy`)와 health(한 번
         관측, 기다리지 않음)를 돌려주고 아무것도 바꾸지 않는다. 보기만 하므로 종료 코드는 항상 0이다. 결과에는 늘
-        `health`와 `remaining_drift`(재생성하지 않았으면 `{}`)가 있다. dry-run 결과의 `images`는 재생성할 것일 때 쓸
-        이미지마다 `ready` 또는 거부 사유다 — 운영 박스는 빌드하지 않으므로(ADR-67) 옮긴 이미지가 맞게 들어왔는지
+        `health`와 `remaining_drift`(재생성하지 않았으면 `{}`)가 있다. dry-run 결과의 `images`는 재생성할 것일 때 그
+        서비스마다 `ready` 또는 거부 사유다(이미지·Common env) — 운영 박스는 빌드하지 않으므로(ADR-67) 옮긴 이미지가 맞게 들어왔는지
         `--confirm` 전에 본다.
         """
 

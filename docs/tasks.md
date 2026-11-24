@@ -19,6 +19,8 @@
   - [ ] **적용**: WSL에서 빌드한 이미지 운반(아래 ADR-67) → plane 수렴(n150 부모, odroid Codex). 배포 뒤 role 연결 수(상주 약 15 예상,
     한도 45)·`Retrying failed database connection` 빈도·첫 요청 실패 사라짐 관측.
   - [ ] 소유자: 바쁜 시간 동시 최악 ≈45로 role `CONNECTION LIMIT 45`에 닿는다 — 관측 뒤 pool 3+3 또는 한도 60 중 결정.
+  - [ ] 공용 role 연결 수 지표·경보(한도 45 대비) — 지금은 관측 수단이 없다.
+  - [ ] `deployment-readiness`(화면)에 plane 이미지 준비 행 — 지금은 `dagster-plane converge --dry-run`의 `images`뿐.
 - [x] **운영 박스 빌드 금지(ADR-67, 2026-11-24 소유자 결정)**: plane 수렴이 `--build`로 n150에서 host 이미지를 빌드하던 것을 없앴다 —
   `scripts/dagster_host_image.py build`(WSL)·`load --ssh`(tar sha256·platform·내용 label·layer digest 대조), converge는 받은 이미지의
   내용 label·arch를 보고 아니면 바꾸기 전에 거부.

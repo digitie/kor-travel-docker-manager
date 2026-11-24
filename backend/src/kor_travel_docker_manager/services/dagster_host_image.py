@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Final
 
 from kor_travel_docker_manager.services.errors import DeploymentContractError
@@ -51,6 +51,47 @@ def _arch(value: str) -> str:
     return _ARCH_ALIASES.get(value, value)
 
 
+#: 이 이미지의 Common(py 0.1.0.dev2) wrapper가 읽는 env와 허용값. 밖이면 wrapper가 종료 코드 2로 멈춰 컨테이너가
+#: 재시작만 반복한다 — plane을 다시 만들기 **전에** 같은 규칙으로 거부한다(적대 리뷰 B-2). 값은 비밀이 아니다.
+_COMMON_INT_ENV: Final = {
+    "KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE": (1, 10),
+    "KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW": (0, 10),
+    "KOR_TRAVEL_DAGSTER_DAEMON_POOL_TIMEOUT_SECONDS": (1, 20),
+}
+_COMMON_POOL_SUM_MAX: Final = 10
+_COMMON_CHOICE_ENV: Final = {
+    "KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING": ("0", "1"),
+    "KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS": ("60", "180"),
+}
+
+
+def common_env_violations(environment: Mapping[str, object]) -> list[str]:
+    """render의 env 가운데 Common wrapper가 거절할 값(이름과 허용 범위만 싣는다). 없는 키는 Common 기본값이라 보지 않는다."""
+
+    problems: list[str] = []
+    values: dict[str, int] = {}
+    for key, (low, high) in _COMMON_INT_ENV.items():
+        if key not in environment:
+            continue
+        raw = str(environment[key])
+        # Common과 같은 판독: ASCII 숫자 1~3자리(부호·공백·전각 거절), 앞자리 0은 정수 그대로.
+        if re.fullmatch(r"[0-9]{1,3}", raw) and low <= int(raw) <= high:
+            values[key] = int(raw)
+        else:
+            problems.append(f"{key} must be an integer {low}..{high}")
+    size = values.get("KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE")
+    overflow = values.get("KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW")
+    if (size if size is not None else 4) + (overflow if overflow is not None else 4) > _COMMON_POOL_SUM_MAX:
+        problems.append(
+            "KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE + _MAX_OVERFLOW must be at most "
+            f"{_COMMON_POOL_SUM_MAX}"
+        )
+    for key, allowed in _COMMON_CHOICE_ENV.items():
+        if key in environment and str(environment[key]) not in allowed:
+            problems.append(f"{key} must be one of {', '.join(allowed)}")
+    return problems
+
+
 def require_prebuilt_host_image(image: str, *, run: Runner = _run) -> str:
     """`image`가 이 호스트에 받아 둔 host 이미지이고 내용 label·arch가 맞으면 그 image ID. 아니면 거부한다."""
 
@@ -66,7 +107,10 @@ def require_prebuilt_host_image(image: str, *, run: Runner = _run) -> str:
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError(f"cannot inspect {image}") from exc
     if inspected.returncode != 0:
-        raise DeploymentContractError(f"{image} is not on this host; {_HOW_TO_LOAD}")
+        # "없음"만 운반 안내를 붙인다 — 데몬 오류 등은 원인을 가리지 않게 판독 실패로 둔다(둘 다 거부).
+        if "no such" in str(getattr(inspected, "stderr", "") or "").lower():
+            raise DeploymentContractError(f"{image} is not on this host; {_HOW_TO_LOAD}")
+        raise DeploymentContractError(f"cannot inspect {image}")
     parts = inspected.stdout.strip().split("|")
     host_arch = _arch(host.stdout) if host.returncode == 0 else ""
     if len(parts) != 3 or re.fullmatch(r"sha256:[0-9a-f]{64}", parts[0]) is None or not host_arch:

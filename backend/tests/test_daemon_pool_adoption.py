@@ -198,14 +198,14 @@ _PRE_PING = "KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING"
 def test_daemon_pool_env_is_daemon_only_with_the_common_defaults() -> None:
     """dev2 연결 풀 크기·대기 env는 daemon에만 렌더하고 기본값은 Common 기본(4·4·10초)이다.
 
-    `-` 보간이라 미설정만 기본값이고 명시 빈 값은 Common이 종료 코드 2로 거절한다(reload와 같은 규칙).
+    빈 값은 유효한 값이 없으므로 `:-` 보간 — 미설정·빈 값 모두 기본값이다(reload의 `-`와 다르다, 적대 리뷰 B-2).
     """
 
     services = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())["services"]
     for key, default in _POOL_ENV.items():
         assert [name for name, service in services.items()
                 if key in (service.get("environment") or {})] == ["kor-travel-dagster-daemon"]
-        assert services["kor-travel-dagster-daemon"]["environment"][key] == "${" + key + "-" + default + "}"
+        assert services["kor-travel-dagster-daemon"]["environment"][key] == "${" + key + ":-" + default + "}"
 
 
 def test_webserver_pre_ping_is_webserver_only_and_on_by_default() -> None:
@@ -214,7 +214,7 @@ def test_webserver_pre_ping_is_webserver_only_and_on_by_default() -> None:
     services = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())["services"]
     assert [name for name, service in services.items()
             if _PRE_PING in (service.get("environment") or {})] == ["kor-travel-dagster-webserver"]
-    assert services["kor-travel-dagster-webserver"]["environment"][_PRE_PING] == "${" + _PRE_PING + "-1}"
+    assert services["kor-travel-dagster-webserver"]["environment"][_PRE_PING] == "${" + _PRE_PING + ":-1}"
 
 
 def test_the_rendered_env_names_are_the_ones_the_vendored_wheel_reads() -> None:

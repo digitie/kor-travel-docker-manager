@@ -554,8 +554,8 @@ def _plane_converge_summary(result: dict[str, Any]) -> str:
     for service, reasons in (result.get("remaining_drift") or {}).items():
         if reasons:
             lines.append(f"  {service} still differs after recreate: {'; '.join(reasons)}")
-    for image, state in (result.get("images") or {}).items():
-        lines.append(f"  image {image}: {state}")
+    for service, state in (result.get("images") or {}).items():
+        lines.append(f"  {service} image: {state}")
     return "\n".join(lines) + "\n"
 
 

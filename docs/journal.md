@@ -9,6 +9,10 @@
   `scripts/dagster_host_image.py build --platform linux/{amd64,arm64}`(내용 label·receipt) → `load --ssh`(tar sha256·platform·label·
   layer digest 대조) → converge는 이미지가 있고 label·arch가 맞을 때만 `run`·`up --no-build`. dry-run `images`에 준비 상태.
   image ID는 저장소 종류(n150 containerd, odroid overlay2)마다 뜻이 달라 대조하지 않는다.
+- 적대 리뷰 2인(둘 다 차단) 반영: 재구축은 slot을 멈추고 올린 뒤에 plane을 수렴하므로 이미지 검사를 무엇도 바꾸기 전으로 앞당김
+  (`_require_shared_plane_images_ready`), 빈·범위 밖 Common env를 다시 만들기 전에 거부하고 새 env는 `:-` 보간, `load`가 받는 쪽 arch를
+  load 전에 확인, 없음과 판독 실패 구분, compose·prod-deployment(odroid 단계·체크리스트·⓪ 운반 순서)의 빌드 진술 정정, 접속 예산에
+  빠진 소비자(code-server의 instance 사용·step 하위 프로세스)와 한도 60 경로의 함정(n150은 `ensure dagster` 거부) 명시.
 - WSL 빌드: amd64·arm64(qemu) 둘 다 빌드, 실제 SDK 격리 PG 스모크(migrate·daemon pool 줄·webserver pre-ping·PG 재시작 뒤 첫 요청)
   통과. 시험 `test_dagster_host_image.py`(신규), converge·adoption·shared config 시험 갱신.
 

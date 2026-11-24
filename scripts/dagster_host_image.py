@@ -44,6 +44,8 @@ CONTENT_LABEL = "io.kor-travel-docker-manager.dagster-host-content"
 #: 운영 박스 표식 — 설치된 Manager release root. 개발 장비(WSL)에는 없다.
 OPERATING_HOST_MARKER = Path("/opt/kor-travel-docker-manager")
 PLATFORMS = {"linux/amd64": "amd64", "linux/arm64": "arm64"}
+#: Docker 데몬 이름 → 이미지 arch 이름(OCI). 운영 호스트는 x86_64(n150)·aarch64(odroid)뿐이다.
+_ARCH_ALIASES = {"x86_64": "amd64", "aarch64": "arm64"}
 _COMPOSE_IMAGE = re.compile(r"^\s*image:\s*" + re.escape(REPOSITORY) + r":(\S+)\s*$", re.MULTILINE)
 
 
@@ -232,6 +234,14 @@ def load(ssh_host: str, tar: Path) -> dict[str, object]:
     receipt = json.loads(Path(f"{tar}.json").read_text(encoding="utf-8"))
     if _sha256_file(tar) != receipt["tar_sha256"]:
         raise HostImageError("the tar differs from its build receipt")
+    # 받는 쪽 arch를 load **전에** 본다 — 다른 arch tar를 넣으면 같은 태그가 그 이미지로 옮겨 가 맞던 이미지를 덮는다.
+    host_arch = subprocess.run(
+        ["ssh", ssh_host, "docker", "info", "--format", shlex.quote("{{.Architecture}}")],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    host_platform = "linux/" + _ARCH_ALIASES.get(host_arch, host_arch)
+    if host_platform != receipt["platform"]:
+        raise HostImageError(f"{ssh_host} is {host_platform} but the tar is {receipt['platform']}")
     with tar.open("rb") as stream:
         subprocess.run(["ssh", ssh_host, "docker", "load"], stdin=stream, check=True)
     inspected = subprocess.run(
@@ -261,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
             result = build(args.platform, args.output_dir, builder=args.builder)
         else:
             result = load(args.ssh_host, args.tar)
-    except (HostImageError, subprocess.CalledProcessError, OSError, KeyError) as exc:
+    except (HostImageError, subprocess.CalledProcessError, OSError, KeyError, ValueError) as exc:
         print(f"dagster host image: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, indent=2))

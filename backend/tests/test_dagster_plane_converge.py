@@ -36,6 +36,7 @@ _REBUILD_ENVIRONMENT = {
     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
 }
 _IMAGE_ID = "sha256:" + "e" * 64
+_ONESHOTS = ("kor-travel-dagster-storage-migrate",)
 
 
 def _migrate_runs(resolved: dict[str, Any], names: tuple[str, ...]) -> list[tuple[str, ...]]:
@@ -53,7 +54,8 @@ def _installed_render() -> dict[str, Any]:
 
     compose, _targets = _documents()
     return yaml.safe_load(
-        re.sub(r"\$\{[A-Z0-9_]+:-([^${}]*)\}", r"\1", yaml.safe_dump(compose))
+        # `${X:-d}`와 `${X-d}` 둘 다(미설정이면 둘 다 d — `compose config`처럼).
+        re.sub(r"\$\{[A-Z0-9_]+:?-([^${}]*)\}", r"\1", yaml.safe_dump(compose))
     )
 
 
@@ -224,8 +226,11 @@ def test_a_plane_image_that_was_not_loaded_is_refused_and_never_built(
     if dry_run:
         result = harness.service.converge_shared_dagster_plane(dry_run=True)
         image = harness.resolved["services"][harness.plane.daemon]["image"]
+        names = (*_ONESHOTS, *harness.plane.services)
         assert result["outcome"] == "would_recreate"
-        assert result["images"] == {image: f"{image} is not on this host; operating hosts do not build it"}
+        assert result["images"] == {
+            name: f"{image} is not on this host; operating hosts do not build it" for name in names
+        }
     else:
         with pytest.raises(DeploymentContractError, match="do not build"):
             harness.service.converge_shared_dagster_plane(dry_run=False)
@@ -259,10 +264,40 @@ def test_every_plane_image_is_checked_before_the_first_change(
 def test_a_ready_plane_image_is_reported_by_dry_run(harness: SimpleNamespace) -> None:
     result = harness.service.converge_shared_dagster_plane(dry_run=True)
 
-    image = harness.resolved["services"][harness.plane.daemon]["image"]
-    assert result["images"] == {image: "ready"}
+    assert result["images"] == {name: "ready" for name in (*_ONESHOTS, *harness.plane.services)}
     harness.state.stale = {name: False for name in harness.plane.services}
     assert harness.service.converge_shared_dagster_plane(dry_run=True)["images"] == {}
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_common_env_value_the_wrapper_rejects_is_refused_before_any_change(
+    harness: SimpleNamespace, dry_run: bool
+) -> None:
+    """빈·범위 밖 pool env로 다시 만들면 daemon이 종료 코드 2로 재시작만 반복한다 — 다시 만들기 전에 거부한다(적대 리뷰 B-2)."""
+
+    daemon = harness.plane.daemon
+    harness.resolved["services"][daemon]["environment"]["KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE"] = "11"
+
+    if dry_run:
+        images = harness.service.converge_shared_dagster_plane(dry_run=True)["images"]
+        assert images[daemon].startswith(f"{daemon}: KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE must be")
+        assert images[harness.plane.webserver] == "ready"
+    else:
+        with pytest.raises(DeploymentContractError, match="POOL_SIZE must be an integer 1..10"):
+            harness.service.converge_shared_dagster_plane(dry_run=False)
+    assert harness.state.compose_calls == []
+
+
+def test_the_prebuilt_hook_delegates_to_the_host_image_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """하네스는 `_prebuilt_host_image_id`를 바꿔 끼운다 — 그 hook이 실제 검사로 이어지는지는 따로 결박한다(적대 리뷰 A-6)."""
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        compose_service_module, "require_prebuilt_host_image",
+        lambda image: (seen.append(image), _IMAGE_ID)[1],
+    )
+    assert ComposeService._prebuilt_host_image_id("kor-travel-dagster-host:" + "a" * 16) == _IMAGE_ID
+    assert seen == ["kor-travel-dagster-host:" + "a" * 16]
 
 
 def test_a_failed_storage_one_shot_leaves_the_plane_untouched(
