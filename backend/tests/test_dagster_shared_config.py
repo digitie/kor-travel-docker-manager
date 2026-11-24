@@ -170,7 +170,7 @@ def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
 
 
 def test_global_dispatch_budget_preserves_independent_tag_caps() -> None:
-    """전역 슬롯과 tag 상한은 함께 적용된다 — tag 상한이 더 높아도 유효하다."""
+    """전역 상한·큐 주기·launch 재시도 값과, 모든 tag 상한이 양의 정수인지 본다(상한 사이의 관계는 아래 두 시험)."""
 
     config = _instance_config()
     runs = config["concurrency"]["runs"]
@@ -180,9 +180,99 @@ def test_global_dispatch_budget_preserves_independent_tag_caps() -> None:
         "max_user_code_failure_retries": 10,
         "user_code_failure_retry_delay": 60,
     }
-    # location·업무별 기존 상한을 전역 6에 맞춰 낮추면 업무 정책을 바꾸게 된다.
-    assert any(entry["limit"] > runs["max_concurrent_runs"] for entry in runs["tag_concurrency_limits"])
+    # 업무별 상한(run group·Map 관리자 요청 등)은 전역과 독립인 테넌트 정책이다 — 전역에 맞춰 낮추지 않는다.
+    # location 상한은 공정성 상한이라 전역보다 작아야 한다(`test_every_location_cap_is_below_its_host_global_budget`).
     assert all(type(entry["limit"]) is int and entry["limit"] > 0 for entry in runs["tag_concurrency_limits"])
+
+
+def _host_location_caps() -> dict[str, tuple[int, dict[str, int]]]:
+    """호스트마다 (전역 상한, 그 호스트 workspace에 실린 location → 실효 상한)을 Manager 렌더로 계산한다."""
+
+    from kor_travel_docker_manager.services import shared_dagster_instance as instance
+
+    raw = _INSTANCE_CONFIG.read_bytes()
+    hosts = load_yaml_rejecting_duplicate_keys(_TARGETS.read_text(encoding="utf-8"))["hosts"]
+    result = {}
+    for host, spec in hosts.items():
+        effective = load_yaml_rejecting_duplicate_keys(
+            instance._host_configuration(raw, spec["dagster_max_concurrent_runs"], spec).decode("utf-8")
+        )
+        runs = effective["concurrency"]["runs"]
+        caps = {e["value"]: e["limit"] for e in runs["tag_concurrency_limits"] if e["key"] == _LOCATION_TAG}
+        workspace = load_yaml_rejecting_duplicate_keys(
+            (_INSTANCE_CONFIG.parent / f"workspace.{host}.yaml").read_text(encoding="utf-8")
+        )
+        locations = [entry["grpc_server"]["location_name"] for entry in workspace["load_from"]]
+        assert locations and set(locations) <= set(caps), (host, locations, caps)
+        result[host] = (runs["max_concurrent_runs"], {name: caps[name] for name in locations})
+    return result
+
+
+def test_every_location_cap_is_below_its_host_global_budget() -> None:
+    """공정성 상한(2026-11-24 소유자 결정, ADR-65): 한 location이 그 호스트의 전역 슬롯을 다 쓰지 못한다.
+
+    전역보다 크거나 같은 location 상한은 아무것도 막지 않는다 — 옛 n150의 map·pinvi 10은 전역 6보다 커서 Map
+    적재 하나가 6을 다 차지하면 다른 테넌트 run이 큐에 남았다(2026-11-23 감사 §1.4). 값은 렌더 결과(호스트
+    override 반영)로 본다. 기본 파일만 보면 odroid가 덮어쓰는 geo·weather 10을 놓친다.
+    """
+
+    rendered = _host_location_caps()
+    for host, (maximum, caps) in rendered.items():
+        assert all(0 < limit < maximum for limit in caps.values()), (host, maximum, caps)
+    assert rendered["n150"] == (6, {
+        "ktc.dagster.definitions": 2,
+        "kortravelmap.dagster.definitions": 4,
+        "pinvi.etl.definitions": 2,
+    })
+    # odroid는 2026-10-26 운영 대조로 보존한 값 그대로다(근거는 docker-targets.yml `hosts.odroid` 주석).
+    assert rendered["odroid"] == (5, {
+        "kortravelgeo_dagster.definitions": 1,
+        "kortravelweather_dagster.definitions": 3,
+        "kor-travel-transport": 3,
+    })
+
+
+#: location 안의 업무 상한 key → 그 업무가 도는 location. 새 key를 더하면 여기 소속을 적어야 시험이 통과한다.
+_IN_LOCATION_KEYS = {
+    "kor_travel_map.feature_update_request_id": "kortravelmap.dagster.definitions",
+    "kortravelweather/run_group": "kortravelweather_dagster.definitions",
+    "kortraveltransport/run_group": "kor-travel-transport",
+}
+_IN_LOCATION_VALUE_PREFIXES = {("kortravelcommon/job", "concierge/"): "ktc.dagster.definitions"}
+
+
+def test_in_location_caps_leave_room_inside_their_location() -> None:
+    """location 안의 업무 상한은 그 location 상한보다 작다 — 같으면 그 업무 하나가 location 몫을 다 차지한다.
+
+    Map 관리자 요청 worker 상한 4는 location 10일 때 "정기 적재에 과반을 남긴다"였다(Map `docker/dagster.yaml`).
+    location이 4가 되면 같은 4가 정기·상태 적재 몫을 0으로 만든다(2026-11-24 적대 리뷰) — 그래서 2다.
+    """
+
+    from kor_travel_docker_manager.services import shared_dagster_instance as instance
+
+    raw = _INSTANCE_CONFIG.read_bytes()
+    hosts = load_yaml_rejecting_duplicate_keys(_TARGETS.read_text(encoding="utf-8"))["hosts"]
+    for host, spec in hosts.items():
+        effective = load_yaml_rejecting_duplicate_keys(
+            instance._host_configuration(raw, spec["dagster_max_concurrent_runs"], spec).decode("utf-8")
+        )
+        limits = effective["concurrency"]["runs"]["tag_concurrency_limits"]
+        caps = {e["value"]: e["limit"] for e in limits if e["key"] == _LOCATION_TAG}
+        _maximum, deployed = _host_location_caps()[host]
+        for entry in limits:
+            if entry["key"] == _LOCATION_TAG:
+                continue
+            location = _IN_LOCATION_KEYS.get(entry["key"]) or next(
+                (loc for (key, prefix), loc in _IN_LOCATION_VALUE_PREFIXES.items()
+                 if entry["key"] == key and str(entry.get("value", "")).startswith(prefix)),
+                None,
+            )
+            assert location is not None, f"소속 location을 모르는 상한: {entry}"
+            if location in deployed:
+                assert entry["limit"] < caps[location], (host, entry, caps[location])
+    assert {e["key"]: e["limit"] for e in load_yaml_rejecting_duplicate_keys(
+        raw.decode("utf-8"))["concurrency"]["runs"]["tag_concurrency_limits"]
+        if e["key"] == "kor_travel_map.feature_update_request_id"} == {"kor_travel_map.feature_update_request_id": 2}
 
 
 def test_the_coordinator_is_the_queued_default_and_telemetry_is_off() -> None:

@@ -1969,3 +1969,51 @@ Manager backend(systemd `ktdm-backend`)의 백그라운드 루프가 자기 호�
 ### 후속
 
 - (open) 두 호스트 설치, py-spy 설치, 발송 채널 결정.
+
+## ADR-65: 공용 Dagster 테넌트 공정성 — location 상한은 호스트 전역보다 작게, `dagster/priority`는 실시간 10·매시 5·배치 0
+
+- 상태: accepted — 소스 반영, 운영 적용 전(n150은 부모, odroid는 Codex)
+- 날짜: 2026-11-24
+- 결정자: 소유자(값과 규칙), 구현은 Claude
+
+### 컨텍스트
+
+2026-11-23 수집 실패 감사 §1.4·§2.6 9: n150의 location 상한 map·pinvi 10은 전역 6보다 커서 무는 일이 없었다 — Map 적재가 6을
+다 차지하면 PinVi·Concierge run이 큐에 남았다. 어느 테넌트도 `dagster/priority`를 달지 않아(transport는 11-24에 먼저 적용) 큐가
+찰 때 5분 실시간 수집과 하루 한 번 backfill이 같은 FIFO 줄에 섰다.
+
+### 결정
+
+1. location(`dagster/code_location`) 상한은 그 호스트의 전역 상한보다 작다. n150: Map 4·PinVi 2·Concierge 2(전역 6),
+   odroid: transport 3·weather 3·geo 1 그대로(전역 5).
+2. `dagster/priority`: 실시간 수집(지금 상황, 1시간 미만 주기) 10, 매시 수집(시간 단위로 바뀌는 값, 1시간 이상·하루 미만) 5,
+   배치(기준 자료는 주기와 무관, 하루 이상 주기, backfill·정리 등) 0. 음수·10 초과 금지, job 정의 tags에 단다. 정본은 [dagster-tenant-fairness.md](dagster-tenant-fairness.md), 테넌트 저장소는 링크만 한다.
+
+### 근거
+
+- 상한이 전역보다 크거나 같으면 독점을 막지 못한다. 합이 전역보다 큰 것은 괜찮다 — 예약이 아니라 독점 방지다.
+- n150 값은 기본 `dagster.yaml`에 둔다(n150은 override 없이 기본을 쓴다 — `test_committed_odroid_tunings_are_explicit_and_n150_inherits`).
+  호스트 override로 n150만 바꾸면 n150도 기본을 쓰지 않게 되고 기본 파일의 Map·PinVi 값이 어느 호스트의 정책도 아니게 된다
+  (기본의 geo·weather 10은 n150에 없는 location의 자리표시 값이다 — odroid가 덮어쓴다).
+- 우선순위 분류는 자료의 성격과 주기로 한다 — transport가 먼저 쓴 값(실시간 10·유가 5·시간표·기준정보 포함 나머지 0)을 그대로
+  설명하는 규칙이라 이미 배포된 테넌트를 거의 바꾸지 않는다(다른 하나 `reference_export_prepare_job` 5는 transport 후속 확인).
+
+### 결과(긍정)
+
+- Map 적재가 몰려도 n150에 2자리가 남는다. 테넌트가 priority를 달면 큐가 찰 때 실시간 run이 먼저 나간다(전역이 이미 가득이면
+  정렬 전에 dequeue를 건너뛰므로 슬롯이 빌 때까지는 모두 기다린다).
+- Map 관리자 요청 worker 상한을 location 상한보다 작게(4→2) 해 정기·상태 적재 몫을 남긴다.
+- 두 호스트 렌더 결과로 규칙을 시험한다(`test_every_location_cap_is_below_its_host_global_budget`).
+
+### 결과(부정)·잃는 것
+
+- Map 전체 적재의 동시 run이 6에서 4로 준다(다른 테넌트가 비어 있을 때도).
+- 기본 파일 bytes가 바뀌어 두 호스트 instance digest가 모두 바뀐다(odroid는 n150 location 항목의 값만 바뀌어도 직렬화가 달라진다) —
+  각 호스트 plane 재생성이 필요하다. odroid는 #634 수렴과 함께 하면 한 번이다.
+- 우선순위는 줄 순서만 바꾼다. 도는 run을 멈추지 않는다.
+- pool에 막혀 큐에 남은 run도 location tag 카운터를 쓴다(Dagster 1.13.24) — 도는 Map run과 앞줄 pool 대기 run의 합이 4에 닿으면
+  priority 0 Map run(관리자 요청 포함)이 막힌다. n150 수렴은 Map priority PR(state job 10) 배포 뒤로 한다.
+
+### 후속
+
+- (open) PinVi·Concierge·geo의 `dagster/priority` 적용, 대화형 요청 run의 등급.

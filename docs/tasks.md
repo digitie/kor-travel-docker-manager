@@ -6,7 +6,7 @@
   보존한다. 그 경로로 code-server를 바꾸면 proxy가 옛 60에 남는다(daemon 360 > proxy 60이라 무해하지 않다 — 중복 기동).
 - [ ] **n150 적용**: 설치 → `pin rebind-execution` → `pin verify` 0 → 다음 pinned 재구축 또는 `dagster-plane converge`(+ concierge·
   geo·weather는 각 경로). instance digest가 바뀌어 daemon·webserver·Map·PinVi·Concierge code-server가 다시 만들어진다.
-- [ ] **odroid 적용(Codex)**: Manager main 설치 → `dagster-instance-config prepare/show`(새 파생 `3cecfb0d…`) → host compose
+- [ ] **odroid 적용(Codex)**: Manager main 설치 → `dagster-instance-config prepare/show`(새 파생 `e8b5e65b…` — ADR-65 반영 뒤, 그 전 `3cecfb0d…`) → host compose
   (`/opt/kor-travel-odroid/compose.yml`)의 daemon·webserver·storage migrate·geo·weather code-server가 **show의 path 하나**를 붙이게
   고치고(지금 geo·weather는 옛 사본 `./config/dagster-shared/dagster.yaml`, daemon·webserver·transport는 10-26 파생 `a7d907c4…` —
   셋 다 `run_retries` 없음) `logging`·`ulimits`도 같은 값으로, **weather code-server와 transport code-server(transport 저장소
@@ -17,8 +17,17 @@
   설정 키가 없어 Common `_daemon_pool_plugin.py`·`dagster_webserver.py` 변경 → wheel vendor → host 이미지 tag.
 - [ ] **멈춘·사라진 instigator의 옛 tick**(n150 약 7.4만 행): Dagster purge가 닿지 않는다. 한 번 지울지(소유자 결정).
 - [ ] **runs·event_logs 보존**(n150 event_logs 2.0 GB): Dagster 설정이 없다 — N일 지난 run 삭제(`delete_run`) 정책은 소유자 결정.
-- [ ] **공정성 상한·`dagster/priority`**(제안): Map 4·PinVi 2·Concierge 2 같은 테넌트 상한과, 매분 PinVi planner 같은 짧은 run에
-  `dagster/priority` 양수 관례. 소유자 결정.
+- [x] **공정성 상한·`dagster/priority`**(2026-11-24 소유자 결정, ADR-65): n150 location 상한 Map 4·PinVi 2·Concierge 2(전역 6),
+  odroid 그대로(근거 주석). priority 실시간 10·매시 5·배치 0 — [정본](dagster-tenant-fairness.md). Map·weather 적용 PR은 각 저장소.
+  - [ ] **적용**: instance digest `f2e05ba6…` → `1e05358a…`(n150), odroid 파생 `3cecfb0d…` → `e8b5e65b…` — 각 호스트 plane 수렴.
+  - [ ] PinVi·Concierge·geo `dagster/priority`(각 저장소 후속), 대화형 요청 run의 등급(소유자).
+  - [ ] **n150 수렴 순서**: Map `dagster/priority` PR(state job 10) 배포 **뒤**에 수렴한다. Dagster 1.13.24 queue는 pool(`GEO_HEAVY` 등)에
+    막혀 큐에 남는 run도 location tag 카운터에 먼저 더한다(`queued_run_coordinator_daemon.py` 310-322) — 도는 Map run + 앞줄 pool 대기
+    run이 4(옛 10)에 닿으면 뒤의 priority 0 Map run(관리자 요청 worker 포함)이 location 상한에 막힌다. state job이 10으로 앞줄에 서면 피한다.
+  - [ ] weather code-server 메모리 상한 표기가 문서끼리 다르다(감사 §2.1 실측 2.5 GB vs `docs/decisions.md`의 odroid 1.5g·`.env.example` 1536m) — 정리.
+  - [ ] weather `regional_weather` run group 상한 1을 공용 plane(`hosts.odroid`)에 둘지 — weather가 정했지만 공용 instance에는 없다.
+  - [ ] transport `reference_export_prepare_job`(요청 실행 export)이 5 — 규칙상 0. 의도(유가 export 경로의 일부인지)를 transport가
+    확인(Codex). 시간표 job(KRIC 매시·여객선 4시간) 0은 규칙과 같다(기준 자료).
 
 ## 2026-11-24 — 공용 Dagster plane 수집 감시(ADR-64)
 
