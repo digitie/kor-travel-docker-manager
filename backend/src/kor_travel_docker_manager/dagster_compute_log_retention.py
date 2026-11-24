@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from contextlib import closing
+from contextlib import ExitStack, closing
 from pathlib import Path, PurePosixPath
 
 import docker
@@ -21,6 +21,12 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 from kor_travel_docker_manager.services.registry import TargetsConfigError, load_targets_config
 from kor_travel_docker_manager.services.service_release import ServiceReleaseError
 from kor_travel_docker_manager.services.transport_core_state import project_lease
+
+WORKER_TIMEOUT_SECONDS = 1200
+
+
+class RetentionWorkerTimeout(ServiceReleaseError):
+    pass
 
 
 def _target(config: dict, target: str) -> tuple[str, str, str, str, Path]:
@@ -71,21 +77,29 @@ def run(config: dict, target: str, *, apply: bool) -> dict:
     project, service, python, module, lease = _target(config, target)
     policy = persistent.policy_for(target, service)
     mode = "apply" if apply else "dry-run"
-    with manager_mutation_lock(), project_lease(lease):
-        with closing(docker.DockerClient(base_url=persistent.LOCAL_DOCKER_HOST, timeout=180)) as docker_client:
+    with ExitStack() as lifetime:
+        with manager_mutation_lock():
+            lifetime.enter_context(project_lease(lease))
+            docker_client = lifetime.enter_context(closing(docker.DockerClient(
+                base_url=persistent.LOCAL_DOCKER_HOST, timeout=WORKER_TIMEOUT_SECONDS + 60,
+            )))
             client = docker_client.api
             records = candidate_service._inventory(docker_client)
             live = _running_code_server(records, project, service)
             proof = persistent.observe_volume_proof(policy, docker_client)
             persistent.verify_volume(policy, docker_client, proof, records, live)
-            # Finish the in-container process before the Docker client can release the host lease.
+            # Finish the in-container process before the Docker client can release the project lease.
             command = [
-                "/usr/bin/timeout", "--kill-after=5s", "150s", python, "-I", "-m", module, f"--{mode}",
+                "/usr/bin/timeout", "--kill-after=5s", f"{WORKER_TIMEOUT_SECONDS}s",
+                python, "-I", "-m", module, f"--{mode}",
             ]
             process = client.exec_create(live["Id"], command)
-            output, _stderr = client.exec_start(process["Id"], demux=True)
-            status = client.exec_inspect(process["Id"])["ExitCode"]
+        # Other projects can acquire the Manager lock while this code server runs.
+        output, _stderr = client.exec_start(process["Id"], demux=True)
+        status = client.exec_inspect(process["Id"])["ExitCode"]
 
+    if status == 124:
+        raise RetentionWorkerTimeout("Dagster 로그 유지보수 실행 시간이 초과되었습니다.")
     report = json.loads(output or b"null")
     if (
         not isinstance(report, dict)
