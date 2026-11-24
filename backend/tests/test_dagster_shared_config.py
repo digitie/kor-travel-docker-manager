@@ -170,7 +170,7 @@ def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
 
 
 def test_global_dispatch_budget_preserves_independent_tag_caps() -> None:
-    """전역 슬롯과 tag 상한은 함께 적용된다 — tag 상한이 더 높아도 유효하다."""
+    """전역 상한·큐 주기·launch 재시도 값과, 모든 tag 상한이 양의 정수인지 본다(상한 사이의 관계는 아래 두 시험)."""
 
     config = _instance_config()
     runs = config["concurrency"]["runs"]
@@ -230,6 +230,49 @@ def test_every_location_cap_is_below_its_host_global_budget() -> None:
         "kortravelweather_dagster.definitions": 3,
         "kor-travel-transport": 3,
     })
+
+
+#: location 안의 업무 상한 key → 그 업무가 도는 location. 새 key를 더하면 여기 소속을 적어야 시험이 통과한다.
+_IN_LOCATION_KEYS = {
+    "kor_travel_map.feature_update_request_id": "kortravelmap.dagster.definitions",
+    "kortravelweather/run_group": "kortravelweather_dagster.definitions",
+    "kortraveltransport/run_group": "kor-travel-transport",
+}
+_IN_LOCATION_VALUE_PREFIXES = {("kortravelcommon/job", "concierge/"): "ktc.dagster.definitions"}
+
+
+def test_in_location_caps_leave_room_inside_their_location() -> None:
+    """location 안의 업무 상한은 그 location 상한보다 작다 — 같으면 그 업무 하나가 location 몫을 다 차지한다.
+
+    Map 관리자 요청 worker 상한 4는 location 10일 때 "정기 적재에 과반을 남긴다"였다(Map `docker/dagster.yaml`).
+    location이 4가 되면 같은 4가 정기·상태 적재 몫을 0으로 만든다(2026-11-24 적대 리뷰) — 그래서 2다.
+    """
+
+    from kor_travel_docker_manager.services import shared_dagster_instance as instance
+
+    raw = _INSTANCE_CONFIG.read_bytes()
+    hosts = load_yaml_rejecting_duplicate_keys(_TARGETS.read_text(encoding="utf-8"))["hosts"]
+    for host, spec in hosts.items():
+        effective = load_yaml_rejecting_duplicate_keys(
+            instance._host_configuration(raw, spec["dagster_max_concurrent_runs"], spec).decode("utf-8")
+        )
+        limits = effective["concurrency"]["runs"]["tag_concurrency_limits"]
+        caps = {e["value"]: e["limit"] for e in limits if e["key"] == _LOCATION_TAG}
+        _maximum, deployed = _host_location_caps()[host]
+        for entry in limits:
+            if entry["key"] == _LOCATION_TAG:
+                continue
+            location = _IN_LOCATION_KEYS.get(entry["key"]) or next(
+                (loc for (key, prefix), loc in _IN_LOCATION_VALUE_PREFIXES.items()
+                 if entry["key"] == key and str(entry.get("value", "")).startswith(prefix)),
+                None,
+            )
+            assert location is not None, f"소속 location을 모르는 상한: {entry}"
+            if location in deployed:
+                assert entry["limit"] < caps[location], (host, entry, caps[location])
+    assert {e["key"]: e["limit"] for e in load_yaml_rejecting_duplicate_keys(
+        raw.decode("utf-8"))["concurrency"]["runs"]["tag_concurrency_limits"]
+        if e["key"] == "kor_travel_map.feature_update_request_id"} == {"kor_travel_map.feature_update_request_id": 2}
 
 
 def test_the_coordinator_is_the_queued_default_and_telemetry_is_off() -> None:
