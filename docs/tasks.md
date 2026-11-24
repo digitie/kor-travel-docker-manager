@@ -17,6 +17,7 @@
 - [ ] **runs·event_logs 보존**(n150 event_logs 2.0 GB): Dagster 설정이 없다 — N일 지난 run 삭제(`delete_run`) 정책은 소유자 결정.
 - [ ] **공정성 상한·`dagster/priority`**(제안): Map 4·PinVi 2·Concierge 2 같은 테넌트 상한과, 매분 PinVi planner 같은 짧은 run에
   `dagster/priority` 양수 관례. 소유자 결정.
+
 ## 2026-11-24 — 공용 Dagster plane 수집 감시(ADR-64)
 
 - [x] 경보 규칙·읽기 전용 storage 질의·진단 수집·화면 패널·상태 API·fd 지표(소스, 단위·e2e 시험). [자세히](plane-watchdog.md)
