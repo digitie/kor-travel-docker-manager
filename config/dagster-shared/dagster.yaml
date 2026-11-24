@@ -56,7 +56,8 @@ concurrency:
     # 더 높아도 함께 적용된다.
     max_concurrent_runs: 6
     tag_concurrency_limits:
-      # 테넌트별 상한 — 오늘 각 instance의 상한 그대로다(D3). key는 `dagster/code_location`이다.
+      # 테넌트별 상한 — 처음에는 옛 각 instance의 상한 그대로였고(D3), 2026-11-24부터 공정성 상한이다(아래). key는
+      # `dagster/code_location`이다.
       #
       # **`.dagster/repository`로 걸면 아무것도 막지 않는다.** 그 tag는 `DagsterRun.tags_for_storage()`가
       # run_tags 표에만 쓰고 run 본문(run_body)의 tags에는 없다. queue daemon은 in-progress run을
@@ -72,17 +73,19 @@ concurrency:
       # `backend/tests/test_dagster_shared_config.py`가 compose의 code-server와 이 목록을 대조하고,
       # `test_dagster_shared_storage_integration.py`가 실제 queue daemon의 dequeue로 상한이 무는지 본다.
       #
-      # 전역보다 큰 상한(n150 기준 map·pinvi 10 > 6)은 **오늘 무는 일이 없다** — dequeue는 전역과 tag 상한을
-      # 함께 보므로 실효 상한은 둘 중 작은 값이다(2026-11-23 수집 실패 감사 §1.4). 숫자는 테넌트 정책으로 그대로
-      # 둔다: 전역에 맞춰 낮추면 전역을 다시 올릴 때 테넌트 몫이 조용히 바뀐다
-      # (`test_global_dispatch_budget_preserves_independent_tag_caps`). 한 테넌트가 전역 슬롯을 다 쓰지 못하게 하는
-      # 공정성 상한(예: Map 4)과 `dagster/priority` 관례는 소유자 결정으로 따로 둔다(`docs/tasks.md`).
+      # **공정성 상한**(2026-11-24 소유자 결정, ADR-65, `docs/dagster-tenant-fairness.md`): 한 location이 그 호스트의
+      # 전역 슬롯을 다 쓰지 못하게 각 location 상한은 전역보다 작다. 이 파일의 값은 n150(전역 6)의 정책이다 —
+      # Map 4·PinVi 2·Concierge 2. 합(8)은 전역보다 커도 된다: 상한은 독점을 막는 것이고 몫을 예약하지 않는다.
+      # 옛 값(map·pinvi 10)은 전역보다 커서 무는 일이 없었다(2026-11-23 수집 실패 감사 §1.4) — Map 적재 하나가
+      # 전역 6을 다 차지하면 PinVi·Concierge run이 큐에 남았다. geo·weather·transport 항목은 n150에 없는
+      # location이라 n150에서는 무관하다. odroid의 실효 값은 `config/docker-targets.yml`의 `hosts.odroid`가
+      # 덮어쓴다(근거 주석도 거기). `test_every_location_cap_is_below_its_host_global_budget`가 두 호스트의 렌더를 본다.
       - key: dagster/code_location
         value: kortravelmap.dagster.definitions
-        limit: 10
+        limit: 4
       - key: dagster/code_location
         value: pinvi.etl.definitions
-        limit: 10
+        limit: 2
       - key: dagster/code_location
         value: kortravelgeo_dagster.definitions
         limit: 10
@@ -186,8 +189,8 @@ sensors:
 # sensor는 status별로 준다(Map `docker/dagster.yaml`의 실측 근거).
 #
 # **tick만 지운다.** Dagster의 `retention`은 schedule·sensor tick 보존만 다룬다 — run·event_log에는
-# 보존 설정이 없어 `dagster_shared`의 runs·event_logs는 지우지 않는 한 계속 자란다(네 테넌트가
-# 한 DB에 쌓는다). 정리는 별도 과제이고, 그때까지 크기는 백업 manifest의 `db_size_bytes`로 본다.
+# 보존 설정이 없다. 오래된 run·event_log와 멈춘 instigator의 tick은 Manager의 주간 정리 job이 지운다
+# (2026-11-24 소유자 결정, `docs/dagster-storage-retention.md`) — 이 파일에는 그 설정이 없다.
 #
 # sensor SKIPPED는 2일이다(옛 7일). n150 `job_ticks` 46.9만 행 중 35.6만이 보존 기간 안의 sensor SKIPPED였다
 # (2026-11-23 실측, 하루 약 5만 — 60초 tick sensor 여럿). SKIPPED는 "할 일 없음" 기록이라 어제까지 보이면 진단에

@@ -649,6 +649,8 @@ validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·
 8. (계획 — ADR-58 proposed, 미구현) **호스트를 고른다.** tenant target은 `host:` 하나, 생략하면 default(n150). 포트는 호스트가
    달라도 바꾸지 않는다([`ports.md`](ports.md) "호스트 규칙"). 다른 호스트에 두면 그 호스트의 Manager root `.env`에 비밀·`KTDM_PROD_URL_*`을
    넣고, 그 target을 부르는 내부 consumer의 compose 기본값(R2)을 커밋 파생물로 갱신한다.
+9. **공용 Dagster에 합류하면** 그 호스트의 전역 상한보다 작은 location 상한을 정하고, job마다 `dagster/priority`(실시간 10·
+   매시 5·배치 0)를 단다 — [`dagster-tenant-fairness.md`](dagster-tenant-fairness.md)(ADR-65).
 
 ---
 

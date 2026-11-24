@@ -6,10 +6,21 @@ hosts:
     addr: 192.168.1.14
     default: true
     dagster_max_concurrent_runs: 6
+    # n150의 location 공정성 상한(Map 4·PinVi 2·Concierge 2)은 기본 `config/dagster-shared/dagster.yaml`이 정본이다
+    # (n150은 override 없이 기본을 그대로 쓴다, ADR-65·docs/dagster-tenant-fairness.md).
   odroid:
     addr: 192.168.1.13
     dagster_max_concurrent_runs: 5
     # test_committed_odroid_tunings_are_explicit_and_n150_inherits가 기존 튜닝과 결박한다.
+    # 공정성 근거(2026-11-24 검토, ADR-65): 세 location의 상한이 모두 전역 5보다 작아 한 테넌트가 슬롯을 독점하지
+    # 못한다 — 그래서 값은 바꾸지 않는다(2026-10-26 운영 대조로 보존한 튜닝, docs/host-dagster-instance-config.md).
+    #  - transport 3: 기본 파일 값(옛 전용 instance의 `max_concurrent_runs: 3`). 그 안의 run group(fuel·parking·
+    #    highway·reference)마다 1이라 실시간 두 group과 유가·기준정보가 겹쳐도 3을 넘지 않는다.
+    #  - weather 3: 외부 provider 수집(`external_weather` 2·`external_weather_slow` 1)이 3을 다 쓰지 않게 group 상한을
+    #    따로 둔다. weather code-server는 run worker까지 한 컨테이너에서 돌고 메모리 상한이 2.5 GB다.
+    #  - geo 1: geo의 무거운 job(`full_load_batch` 최장 약 48시간·`db_backup` 약 2.5시간·`source_rebuild_db`, 2026-11-24
+    #    odroid 30일 실측)은 공용 PG에 큰 쓰기를 하는 직렬 작업이라 겹치게 두지 않는다.
+    #  합(7)은 전역 5보다 크다 — 상한은 독점을 막는 것이고 몫을 예약하지 않는다.
     dagster_tag_concurrency_limits:
       - key: dagster/code_location
         value: kortravelgeo_dagster.definitions

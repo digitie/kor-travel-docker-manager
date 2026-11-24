@@ -53,7 +53,9 @@ def test_existing_locations_keep_their_limits_and_concierge_has_bounded_lanes():
     by_location = {entry["value"]: entry["limit"] for entry in limits if entry["key"] == "dagster/code_location"}
     assert by_location["ktc.dagster.definitions"] == 2
     assert by_location["kor-travel-transport"] == 3
-    assert all(by_location[name] == 10 for name in ("kortravelmap.dagster.definitions", "pinvi.etl.definitions", "kortravelgeo_dagster.definitions", "kortravelweather_dagster.definitions"))
+    # n150 공정성 상한(ADR-65): Map 4·PinVi 2. geo·weather는 n150에 없는 location이고 odroid 값은 호스트 override다.
+    assert (by_location["kortravelmap.dagster.definitions"], by_location["pinvi.etl.definitions"]) == (4, 2)
+    assert all(by_location[name] == 10 for name in ("kortravelgeo_dagster.definitions", "kortravelweather_dagster.definitions"))
     lanes = {entry["value"]: entry["limit"] for entry in limits if entry["key"] == "kortravelcommon/job"}
     assert lanes == {"concierge/" + name: 1 for name in ("concierge_interactive", "concierge_batch", "concierge_source_scan", "concierge_feature_exports", "concierge_admin_region_refresh")}
 

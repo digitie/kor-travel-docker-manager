@@ -1,3 +1,14 @@
+## 2026-11-24 — 공용 Dagster 테넌트 공정성: location 상한·`dagster/priority` 규칙(ADR-65)
+
+- 소유자 결정: n150 location 상한 Map 10→4·PinVi 10→2·Concierge 2(전역 6 유지). odroid transport 3·weather 3·geo 1은 이미 전역 5보다
+  작아 그대로 두고 `hosts.odroid`에 값별 근거를 주석으로 달았다(geo는 odroid 30일 실측 `full_load_batch` 최장 약 48시간 등).
+- `dagster/priority` 공통 규칙(실시간 10·매시 5·배치 0, 음수·10 초과 금지)의 정본을 [dagster-tenant-fairness.md](dagster-tenant-fairness.md)에
+  두었다. transport는 이미 이 값이다. Map·weather 적용은 각 저장소 PR.
+- 렌더 비교(Manager `_host_configuration`, 두 호스트): n150 digest `f2e05ba624b60652` → `c30eabbbb6bff6f9`(location 상한 map 4·pinvi 2만
+  바뀜), odroid `3cecfb0d7790a7b0` → `fcb1b0e6985f20be`(odroid 실효 location 상한 transport 3·weather 3·geo 1은 그대로, 직렬화에 든
+  n150 location 항목만 바뀜). 다른 항목 무변화.
+- 시험: `test_every_location_cap_is_below_its_host_global_budget`(두 호스트 렌더 + workspace의 location 대조), 상한 값 시험 갱신.
+
 ## 2026-11-24 — 수집 경보 code-server 자동 재시작(소유자 승인, 제한적)
 
 - 계기: code-server grpc 프로세스 fd ≥90% 또는 location launch 연속 실패. 조건: 그 location 실행 중 run 0(읽기 전용 질의), 컨테이너당

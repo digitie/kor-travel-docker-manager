@@ -17,8 +17,10 @@
   설정 키가 없어 Common `_daemon_pool_plugin.py`·`dagster_webserver.py` 변경 → wheel vendor → host 이미지 tag.
 - [ ] **멈춘·사라진 instigator의 옛 tick**(n150 약 7.4만 행): Dagster purge가 닿지 않는다. 한 번 지울지(소유자 결정).
 - [ ] **runs·event_logs 보존**(n150 event_logs 2.0 GB): Dagster 설정이 없다 — N일 지난 run 삭제(`delete_run`) 정책은 소유자 결정.
-- [ ] **공정성 상한·`dagster/priority`**(제안): Map 4·PinVi 2·Concierge 2 같은 테넌트 상한과, 매분 PinVi planner 같은 짧은 run에
-  `dagster/priority` 양수 관례. 소유자 결정.
+- [x] **공정성 상한·`dagster/priority`**(2026-11-24 소유자 결정, ADR-65): n150 location 상한 Map 4·PinVi 2·Concierge 2(전역 6),
+  odroid 그대로(근거 주석). priority 실시간 10·매시 5·배치 0 — [정본](dagster-tenant-fairness.md). Map·weather 적용 PR은 각 저장소.
+  - [ ] **적용**: instance digest `f2e05ba6…` → `c30eabbb…`(n150), odroid 파생 `3cecfb0d…` → `fcb1b0e6…` — 각 호스트 plane 수렴.
+  - [ ] PinVi·Concierge·geo `dagster/priority`(각 저장소 후속), 대화형 요청 run의 등급(소유자).
 
 ## 2026-11-24 — 공용 Dagster plane 수집 감시(ADR-64)
 
