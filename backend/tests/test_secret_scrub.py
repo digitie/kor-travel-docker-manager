@@ -237,7 +237,9 @@ def test_every_compose_key_name_is_sensitive_unless_declared_public() -> None:
     """compose·`.env.example`에 새 `*KEY` 이름이 생기면 가림 규칙에 걸리는지 선언 시점에 본다.
 
     2026-11-24 `PINVI_TELEGRAM_PLANNER_KEY`가 어느 조각에도 걸리지 않아 Manager inspect env 화면과 실패 출력에 원문이
-    나갈 수 있었다. 규칙을 `_KEY` 전체로 넓히지 않았으므로(플래그 값 치환) 이 검사가 그 틈을 막는다.
+    나갈 수 있었다. 규칙을 `_KEY` 전체로 넓히지 않았으므로(플래그 값 치환) 이 검사가 **`KEY`·`KEYS` 토큰을 가진 이름**의
+    틈을 막는다(`_KEY_ID`·`_KEYS` 포함, `VALKEY`는 토큰이 아니다). 이름에 그런 토큰이 없는 비밀(예: 비밀 원천을 보간하는
+    다른 이름)은 이 검사의 범위 밖이다.
     """
 
     import re
@@ -248,7 +250,11 @@ def test_every_compose_key_name_is_sensitive_unless_declared_public() -> None:
     text = "\n".join(
         (root / name).read_text(encoding="utf-8") for name in ("docker-compose.yml", ".env.example")
     )
-    names = set(re.findall(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*KEY)(?![A-Za-z0-9_])", text))
+    names = {
+        name
+        for name in re.findall(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*[A-Z0-9])(?![A-Za-z0-9_])", text)
+        if {"KEY", "KEYS"} & set(name.split("_"))
+    }
     assert "PINVI_TELEGRAM_PLANNER_KEY" in names  # 추출이 낡아 아무것도 못 보면 항진이 된다
     assert _PUBLIC_KEY_NAMES <= names, "공개 예외 목록에 없어진 이름이 남아 있다"
     assert sorted(name for name in names - _PUBLIC_KEY_NAMES if not is_sensitive_key(name)) == []

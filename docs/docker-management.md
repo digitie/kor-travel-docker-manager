@@ -932,6 +932,10 @@ PinVi 예약 Telegram 알림은 code-server의 매분 schedule이 PinVi API의 �
   ⚠️ `service-release apply-core-candidate pinvi`는 실행 중 컨테이너의 env를 보존하고 `PINVI_SOURCE_REVISION`만 바꾼다
   (`service_release_component_candidate._preserve_environment`) — 그 경로로는 키·URL이 들어가지 않는다. compose에서
   다시 만드는 경로(pinned 재구축 등)로 적용하고, 적용 뒤 두 컨테이너의 env에 이름이 있는지(값은 출력하지 않는다) 확인한다.
+  키 **회전**도 같다. 한 서비스만 다시 만드는 경로(UI 설정 편집·reset·단일 서비스 up)로 code-server만 새 키를 받으면 위의
+  404 실패가 난다 — 두 서비스를 함께 다시 만든다. 값 비교가 필요하면 두 컨테이너 키의 sha256만 비교한다.
+- **키 강도**: PinVi는 빈 값이 아닌 어떤 키든 받고, `/internal/telegram/*`는 공개 API origin에도 걸린다. 키는 `openssl rand -hex 32`
+  같은 32바이트 이상 무작위 값(`$` 없음 — compose 보간)으로 만든다. 강도를 강제하는 검증은 아직 없다(PinVi 쪽 validator가 자연스러운 자리).
 - 결박: `backend/tests/test_pinvi_etl_env_wiring.py`(두 서비스 수신·빈 값·URL == `--port`·registry `connection`·`.env`
   재정의 무시), `backend/tests/test_secret_scrub.py`(compose `*KEY` 이름 전부가 가림 규칙에 걸리는지).
 

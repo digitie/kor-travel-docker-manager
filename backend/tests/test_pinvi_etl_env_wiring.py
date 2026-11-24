@@ -205,6 +205,9 @@ def test_planner_url_is_the_loopback_port_the_api_listens_on() -> None:
     rendered = _render(_CODE_SERVER, _PINVI_API, environment_update={})
     url = rendered[_CODE_SERVER]["environment"][_PLANNER_URL_ENV]
     assert url == f"http://127.0.0.1:{_api_listen_port(rendered)}"
+    # loopback은 둘 다 host network일 때만 같은 프로세스 공간을 가리킨다(production C6c도 host를 강제한다).
+    assert rendered[_CODE_SERVER]["network_mode"] == "host"
+    assert rendered[_PINVI_API]["network_mode"] == "host"
     targets = yaml.safe_load(_TARGETS.read_text(encoding="utf-8"))
     # 같은 target(pinvi)·같은 호스트 안 참조는 loopback이다(`docs/ports.md` 호스트 규칙).
     assert _PINVI_API in targets["targets"]["pinvi"]["services"]
@@ -228,8 +231,10 @@ def test_planner_env_is_only_where_pinvi_reads_it() -> None:
     """키는 API와 code-server에만, URL은 code-server에만(API는 읽지 않는다). 다른 PinVi 서비스로 비밀을 넓히지 않는다."""
 
     services = _source_services()
-    assert _PLANNER_KEY_ENV in services[_CODE_SERVER]["environment"]
-    assert _PLANNER_KEY_ENV in services[_PINVI_API]["environment"]
+    # 두 서비스가 **같은 원천** 하나를 읽어야 한다 — 한쪽만 다른 변수(폴백 포함)를 읽으면 값이 갈라져 API 404로 매분 run이
+    # 실패한다(점검은 404에서 fail-open).
+    for name in (_CODE_SERVER, _PINVI_API):
+        assert services[name]["environment"][_PLANNER_KEY_ENV] == f"${{{_PLANNER_KEY_ENV}:-}}", name
     assert _PLANNER_URL_ENV in services[_CODE_SERVER]["environment"]
     assert _PLANNER_URL_ENV not in services[_PINVI_API]["environment"]
     for name in _PLANNER_KEY_FREE_SERVICES:
