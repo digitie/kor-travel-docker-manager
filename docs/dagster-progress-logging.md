@@ -46,7 +46,8 @@ Manager의 기존 적용 절차([공용 plane](platform-topology.md#7-전환-중
 
 외부 상태 볼륨을 쓰는 코드 서버는 공용 Manager 유지보수 타이머로 로컬 실행 로그를
 정리할 수 있다. Manager는 기존 호스트·프로젝트 배포 잠금을 확보한 뒤 등록된 Compose
-역할과 볼륨을 확인한다. 프로젝트의 Python 모듈이 종료 상태, 소유권, 만료 시각을
+역할과 볼륨을 확인한다. 검사 중에는 해당 프로젝트의 배포 잠금만 유지한다.
+프로젝트의 Python 모듈이 종료 상태, 소유권, 만료 시각을
 판단하고 집계 결과를 JSON으로 반환한다.
 
 Transport 배포와 상태 이관 뒤 dry-run을 실행한다.
@@ -64,5 +65,5 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/python -I -m kor_travel_do
 기존 core release 그룹에 속한 코드 서버 서비스, 컨테이너의 Python 경로와 모듈을 등록한다.
 전용 볼륨은 [Manager의 상태 볼륨 정책](service-current-release.md#이후-교체와-다른-프로젝트-채택)을 사용한다. 모듈은 `--dry-run`과 `--apply`를 지원하고
 stdout에 실행 모드와 성공 여부를 담은 버전 1 JSON 한 줄을 출력해야 한다.
-코드 서버 이미지의 `/usr/bin/timeout`이 한 번 실행을 10분으로 제한한다. 정확한
+코드 서버 이미지의 `/usr/bin/timeout`이 한 번 실행을 20분으로 제한한다. 정확한
 대상에 대한 dry-run과 코드 서버 재생성 검증 뒤 해당 프로젝트의 타이머를 켠다.
