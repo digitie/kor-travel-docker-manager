@@ -1,3 +1,16 @@
+## 2026-11-24 — 수집 경보 code-server 자동 재시작(소유자 승인, 제한적)
+
+- 계기: code-server grpc 프로세스 fd ≥90% 또는 location launch 연속 실패. 조건: 그 location 실행 중 run 0(읽기 전용 질의), 컨테이너당
+  6시간 1회(시도 시각을 먼저 파일에 남김 — 실패도 셈, Manager 재시작에도 유지), 허용 호스트(기본 n150).
+- C6c 경계: 새 경로를 만들지 않고 화면 재시작 단추와 같은 `docker_service.control_container(…, "restart")`를 쓴다 — Manager compose
+  컨테이너는 C6c host lock(비대기, 배포 중이면 아무것도 바꾸지 않고 거부)과 mutation 환경 계약을 그대로 지난다. registry 밖·code-server가
+  아닌 컨테이너는 거부.
+- 재시작 전후 fd 진단, Telegram 결과 알림, 화면 "자동 재시작" 줄·기록·보류 사유. ADR-64 결과의 "자동 재시작 없음"을 갱신했다.
+- 적대 리뷰(자동 운영 변경 안전성) 반영: 진단 뒤 재시작 바로 앞 실행 중 run·컨테이너 안 run worker 재확인(P1 TOCTOU), launch 계기는 마지막
+  시도 뒤 새 실패만, 설정은 소유자 한도보다 엄격하게만, 아무것도 바꾸지 않은 거부는 30분 뒤 재시도, 깨진 기록 파일은 fail-closed, 진단 디렉터리
+  충돌, Telegram이 꺼져 있으면 재시작 안 함, 모호한 location 대응 거부, 형제 프로젝트 컨테이너 거부.
+- 시험: `backend/tests/test_plane_watchdog_restart.py`, `frontend/e2e/plane-alerts.spec.ts`. [자세히](plane-watchdog.md#9-code-server-자동-재시작소유자-승인-2026-11-24--제한적)
+
 ## 2026-11-24 — 수집 경보 Telegram 발송(위험 즉시·주의 하루 1회 요약)
 
 - 소유자 결정: 외부 발송 채널은 Telegram 봇, 토큰은 PinVi 시스템 봇(`PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`, Manager root `.env`) 재사용.

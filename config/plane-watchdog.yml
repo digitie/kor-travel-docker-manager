@@ -138,6 +138,20 @@ diagnostics:
   max_captures: 50
   log_tail_minutes: 60
 
+# code-server 자동 재시작(소유자 승인 2026-11-24 — 제한적). 계기: 그 code-server의 grpc 프로세스 fd 비율 ≥ fd_ratio, 또는
+# (on_launch_failure_streak이면) 그 location의 launch_failure_streak 경보. 조건: 이 호스트가 hosts에 있고, 그 location에 실행 중
+# run(STARTING·STARTED·CANCELING)이 0이고, 같은 컨테이너의 마지막 시도가 min_interval_hours보다 오래됐다. 재시작은 화면의 재시작
+# 단추와 같은 정식 경로(C6c host lock — 배포 중이면 거부)로만 하고, 전후 fd 진단을 남기고 Telegram으로 알린다.
+# 기본은 n150에서만 켠다. odroid는 그 호스트 배포 때 hosts에 더한다(Codex).
+auto_restart:
+  enabled: true
+  hosts: [n150]
+  fd_ratio: 0.9
+  on_launch_failure_streak: true
+  min_interval_hours: 6
+  # 재시작 뒤 진단을 다시 모으기까지 기다리는 시간(초). code-server가 grpc 프로세스를 다시 띄우는 시간.
+  post_restart_capture_seconds: 90
+
 # 외부 발송. 화면 경보 패널·상태 API·Manager 로그(journald)는 늘 돈다. 외부 채널은 Telegram(소유자 결정 2026-11-24)이고,
 # 일반 webhook은 꺼 둔다(Resend 이메일 연동은 보류, #720).
 notifiers:

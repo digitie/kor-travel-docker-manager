@@ -137,6 +137,37 @@ test('수집 경보 패널: Telegram 발송 규칙과 최근 실패를 숨기지
   expect(backend.errors).toEqual([]);
 });
 
+test('수집 경보 패널: code-server 자동 재시작 규칙·기록·보류 사유를 보인다', async ({ page }, testInfo) => {
+  const autoRestart = {
+    enabled: true, active_on_host: true, hosts: ['n150'],
+    policy: 'grpc fd ≥ 90% 또는 launch 연속 실패 · 그 location 실행 중 run 0 · 컨테이너당 6시간 1회',
+    recent: [
+      { container: 'pinvi-dagster-code-server-latest', location: 'pinvi.etl.definitions', rule: 'dagster_fd_usage',
+        reason: 'grpc 프로세스(pid 4242) 열린 fd 980/1024(96%) ≥ 90%', at: '2026-11-24T01:00:00Z',
+        finished_at: '2026-11-24T01:02:00Z', success: true, error: null,
+        diagnostics: { before: '/state/plane-watchdog/diagnostics/20261124T010000Z-fd-pinvi', after: null } },
+      { container: 'kor-travel-concierge-dagster-code-server-latest', location: 'ktc.dagster.definitions',
+        rule: 'launch_failure_streak', reason: 'run launch 5회 연속 실패', at: '2026-11-23T20:00:00Z',
+        success: false, error: 'ManagerMutationActiveError: another Manager mutation is already active', diagnostics: {} },
+    ],
+    skipped: ['pinvi-dagster-code-server-latest: pinvi.etl.definitions에 실행 중 run 2개 — 재시작하지 않습니다'],
+  };
+  const backend = await mockBackend(page, testInfo, { planeAlerts: { ...quietPlaneAlerts, auto_restart: autoRestart } });
+  await login(page);
+  const panel = page.getByRole('region', { name: '수집 경보' });
+  await expect(panel.getByTestId('plane-alerts-auto-restart')).toContainText('code-server 자동 재시작: grpc fd ≥ 90%');
+  const records = panel.getByRole('list', { name: '자동 재시작 기록' }).getByRole('listitem');
+  await expect(records).toHaveCount(2);
+  await expect(records.first()).toContainText('pinvi-dagster-code-server-latest 재시작 완료');
+  await expect(records.nth(1)).toHaveAttribute('data-success', 'false');
+  await expect(records.nth(1)).toContainText('another Manager mutation is already active');
+  await panel.getByText('자동 재시작 보류 1건').click();
+  await expect(panel.getByRole('list', { name: '자동 재시작 보류 사유' })).toContainText('실행 중 run 2개');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath(`plane-alerts-auto-restart-${testInfo.project.name}.png`), fullPage: true });
+  expect(backend.errors).toEqual([]);
+});
+
 test('수집 경보 패널: 경보가 없으면 상태로, 감시자가 멈추면 그 사실을 보인다', async ({ page }, testInfo) => {
   const stale = {
     ...quietPlaneAlerts, stale: true, evaluation_age_seconds: 1800,

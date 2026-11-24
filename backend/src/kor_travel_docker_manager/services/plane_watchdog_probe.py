@@ -233,6 +233,15 @@ SELECT coalesce(jsonb_agg(x ORDER BY x.created DESC), '[]'::jsonb) FROM (
 """
 
 
+# location 하나의 실행 중 run 수(자동 재시작 직전 1회). `idx_run_range(status, …)`의 status 앞부분 — 실행 중 run은 몇 개뿐이다.
+_RUNNING_RUNS_SQL = """
+SELECT jsonb_build_object('running', count(*)) FROM runs r
+WHERE r.status IN ('STARTING', 'STARTED', 'CANCELING')
+  AND EXISTS (SELECT 1 FROM run_tags t WHERE t.run_id = r.run_id
+                AND t.key = 'dagster/code_location' AND t.value = :'location');
+"""
+
+
 @dataclass(frozen=True)
 class StorageTarget:
     container: str
@@ -337,6 +346,14 @@ class StorageClient:
             if key in result and record.location == key[0]:
                 result[key].append(record)
         return result
+
+    def running_runs(self, location: str) -> int:
+        """그 location의 실행 중(STARTING·STARTED·CANCELING) run 수."""
+
+        result = self.query_json(_RUNNING_RUNS_SQL, {"location": location})
+        if not isinstance(result, dict) or not isinstance(result.get("running"), int):
+            raise ProbeError("실행 중 run 질의 결과의 모양이 예상과 다릅니다.")
+        return int(result["running"])
 
     def tagged_job_runs(
         self, location: str, job: str, tag_key: str, *, since: float, limit: int
@@ -556,6 +573,19 @@ def container_processes(container: str, runner: Runner = subprocess.run) -> list
         if pid_text.isdigit():
             processes.append((int(pid_text), args.strip()))
     return processes
+
+
+#: compose probe의 `runs_in_flight`와 같은 표지 — run worker는 multiprocessing spawn 자식이다.
+_RUN_WORKER_MARKER = "from multiprocessing.spawn import spawn_main"
+
+
+def count_run_workers(container: str, runner: Runner = subprocess.run) -> int:
+    """컨테이너 안 run worker 프로세스 수. `docker top`을 읽지 못하면 ProbeError(모르면 재시작하지 않는다)."""
+
+    output = _docker_text(["top", container, "-eo", "pid,args"], runner)
+    if output is None:
+        raise ProbeError(f"{container}의 프로세스를 읽지 못했습니다.")
+    return sum(1 for line in output.splitlines()[1:] if _RUN_WORKER_MARKER in line)
 
 
 def read_container_fds(

@@ -247,7 +247,7 @@ def test_telegram_config_is_validated(config, key, value, message):
         "version": 1, "interval_seconds": 120, "storage": dict(config.storage),
         "rules": {name: dict(item) for name, item in config.rules.items()},
         "diagnostics": dict(config.diagnostics),
-        "notifiers": {name: dict(item) for name, item in config.notifiers.items()},
+        "notifiers": {name: dict(item) for name, item in config.notifiers.items()}, "auto_restart": dict(config.auto_restart),
     }))
     document["notifiers"]["telegram"][key] = value
     with pytest.raises(wd.ConfigError, match=message):
