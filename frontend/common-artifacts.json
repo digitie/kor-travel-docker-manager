@@ -1,8 +1,8 @@
 {
   "status": "CANDIDATE_NOT_RELEASED",
-  "candidate": "field-focus-ui-0.2.5-main-fe141143cc8b",
+  "candidate": "touch-focus-ui-0.2.6-main-05d7f91a4151",
   "sources": {
-    "common": "fe141143cc8ba75e8fd0b6134e1c9e518e294fa2",
+    "common": "05d7f91a4151a69d72b8bf1dc0007291c6ab2a61",
     "maplibre-vworld-react": "79b70997de8dd4a6bcc9630233f14f273cb27991",
     "lightningcss": "748651cbd845971e65c411166ddee101745dab21",
     "serde-content": "18e53fcf6f8ace093a292891b34fa3411192617d",
@@ -10,14 +10,14 @@
   },
   "packages": {
     "@kor-travel/tokens": {
-      "version": "0.1.6",
-      "filename": "kor-travel-tokens-0.1.6.tgz",
-      "integrity": "sha512-y9uEIo9dTG/XlohG+kQs9goL10tsEVgHLwUA81XMskts1oZJaim+7UBsG773l/Q1W54MUOFWF1BLsmlFNjGrAA=="
+      "version": "0.1.7",
+      "filename": "kor-travel-tokens-0.1.7.tgz",
+      "integrity": "sha512-B3wQbS8Jn61znGfMjNM4xzVl8fx/8ud0ZIaOwJGHJNBBV+lBpt0QfrOTD+k+KSlFDjp+moyvTCLnuIzvE3Pqqg=="
     },
     "@kor-travel/ui": {
-      "version": "0.2.5",
-      "filename": "kor-travel-ui-0.2.5.tgz",
-      "integrity": "sha512-GKICXj4/I4pZQHvbrLy4qL7Bbtn757soe7g8M9phZrNXOsSXtU5bFhharNAWpjD6/qXxSyVWtfTxrZqsgAk2hA=="
+      "version": "0.2.6",
+      "filename": "kor-travel-ui-0.2.6.tgz",
+      "integrity": "sha512-29bcozPJl8nS+IP5uL1rjs1KjMQQpBo9X80bYtcGnIh5pfQtNrWqgqum/K33vx04w2eP4Zi4uQszCS8FeLHSKg=="
     },
     "lightningcss": {
       "version": "1.33.0+nativecss.fix.4",

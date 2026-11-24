@@ -10,7 +10,7 @@ P0·P7, 디자인 토큰과 룩앤필은 [`design-system.md`](design-system.md)�
 
 구현: `frontend/src/components/`, `frontend/src/lib/`
 
-현재 화면의 셸은 `@kor-travel/ui` 0.2.5 `AdminShell`이다. 1024px 이상은 좌측 rail(16rem,
+현재 화면의 셸은 `@kor-travel/ui` 0.2.6 `AdminShell`이다. 1024px 이상은 좌측 rail(16rem,
 접으면 4rem 아이콘)이고, 그 아래는 한 줄 상단 바의 메뉴 버튼으로 여는 좌측 drawer다. 상단 바에는
 "영역 - 페이지" 제목(`Docker Manager - 대시보드`, 문서 제목도 같다)만 두고 앱 설명 문구는 두지
 않는다. 페이지 설명은 같은 줄에 작게 말줄임으로, 동작은 오른쪽에 두며 좁은 폭에서는 아이콘 버튼만
