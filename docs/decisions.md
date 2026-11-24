@@ -2017,3 +2017,45 @@ Manager backend(systemd `ktdm-backend`)의 백그라운드 루프가 자기 호�
 ### 후속
 
 - (open) PinVi·Concierge·geo의 `dagster/priority` 적용, 대화형 요청 run의 등급.
+
+## ADR-66: 공용 Dagster storage 보존 정리는 Manager가 주 1회 SQL 배치로 한다
+
+- 상태: accepted — 소스 구현, 운영 설치 전(n150은 부모, odroid는 Codex)
+- 날짜: 2026-11-24
+- 결정자: 소유자(보존 일수·주기·소유), 구현은 Claude
+
+### 컨텍스트
+
+Dagster `retention`은 RUNNING instigator의 tick만 지운다. run·event_log에는 보존 설정이 없고 멈췄거나 workspace에서 빠진
+instigator의 tick은 남는다(n150 약 7.1만 행). n150 event_logs 2.0 GB·job_ticks 1.1 GB가 무기한 증가한다(2026-11-23 수집 실패 감사 §1.4).
+
+### 결정
+
+Manager가 두 plane 공통 설정(`config/dagster-storage-retention.yml`)으로 주 1회(일요일 06:10 KST, systemd timer) 정리한다:
+종료 run SUCCESS 90일·FAILURE·CANCELED 180일(그 run의 event_logs·run_tags·asset_event_tags·asset_check_executions 포함),
+RUNNING이 아니고(14일 안에 갱신된 DECLARED_IN_CODE도 제외) 14일 안에 tick이 없는 instigator의 14일 넘은 tick. 자산 상태·backfill·
+concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째로만 지운다.
+배치 트랜잭션·statement/lock timeout·진행 로그·dry-run 기본. 자세히는 [dagster-storage-retention.md](dagster-storage-retention.md).
+
+### 근거
+
+- Dagster `delete_run`과 같은 표들을 지우되 SQL 한 트랜잭션으로 옮겼다 — 배치·timeout을 걸 수 있고, `delete_run`이
+  지우는 자산의 최신 event를 남기며, `delete_run`이 남기는 asset_check_executions 고아를 지운다.
+- Dagster를 import하지 않으므로 검토한 schema 판(1.13.24, `29b539ebc72a`)에서만 돈다. host 이미지 핀과 시험으로 결박했다.
+- 공용 Dagster 밖(systemd)이라 plane이 멈춰도 돈다. storage 접근은 백업·수집 감시와 같은 길이라 새 비밀·role이 없다.
+
+### 결과(긍정)
+
+- 첫 실행이 n150 tick 약 7.1만 행·odroid 326행을 지운다. run 삭제는 n150 2026-12-29·odroid 2027-01-12 무렵부터 주 1만·5천 run 안팎.
+- 실제 Dagster storage 시험으로 고아 0과 정리 뒤 Dagster 읽기를 결박했다.
+
+### 결과(부정)·잃는 것
+
+- 90일(실패 180일) 넘은 run의 로그·event를 UI에서 볼 수 없다. compute log 파일은 이 job이 아니라 code-server별 정리가 맡는다.
+- 파일 크기는 줄지 않는다(행 자리 재사용). Dagster를 올리면 이 job은 재검토 전까지 멈춘다(의도).
+- 계보 묶음은 통째로만 지우므로, 한 run이 오래 보호되면(자산 최신 event 등) 그 묶음의 다른 run도 함께 남는다.
+- 정리 시작 뒤 90일 넘은 run을 재실행하면 새 자식은 판정 snapshot에 없어 조상이 지워질 수 있다(받아들인 경합).
+
+### 후속
+
+- (open) 두 호스트 설치·timer 활성, 첫 실행 결과 기록. 수집 감시가 timer 실패를 보게 할지.

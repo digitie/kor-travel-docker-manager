@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Kor Travel shared Dagster storage retention
+
+[Timer]
+# 일요일 06:10 KST — 두 호스트 14일 실측에서 run 부하가 낮은 시각(docs/dagster-storage-retention.md).
+OnCalendar=Sun *-*-* 06:10:00 Asia/Seoul
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

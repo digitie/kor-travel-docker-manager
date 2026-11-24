@@ -15,8 +15,10 @@
   helper로 같은 path.
 - [ ] **storage 연결 풀(Common)**: daemon pool 상수(2+2·대기 1초)를 키우고 대기 ≥10초, webserver에 pre-ping — dagster-postgres
   설정 키가 없어 Common `_daemon_pool_plugin.py`·`dagster_webserver.py` 변경 → wheel vendor → host 이미지 tag.
-- [ ] **멈춘·사라진 instigator의 옛 tick**(n150 약 7.4만 행): Dagster purge가 닿지 않는다. 한 번 지울지(소유자 결정).
-- [ ] **runs·event_logs 보존**(n150 event_logs 2.0 GB): Dagster 설정이 없다 — N일 지난 run 삭제(`delete_run`) 정책은 소유자 결정.
+- [x] **멈춘 instigator의 옛 tick·runs·event_logs 보존**(2026-11-24 소유자 결정, ADR-66): Manager 주간 정리 job — run SUCCESS 90일·
+  실패 180일, 멈춘 instigator tick 14일. [정본](dagster-storage-retention.md).
+  - [ ] **설치**(각 호스트): Manager 설치 → dry-run 확인(n150 tick 약 7.06만·run 0, odroid tick 326) → `--apply` 한 번 →
+    `ktdm-dagster-storage-retention.timer` 설치·활성.
 - [x] **공정성 상한·`dagster/priority`**(2026-11-24 소유자 결정, ADR-65): n150 location 상한 Map 4·PinVi 2·Concierge 2(전역 6),
   odroid 그대로(근거 주석). priority 실시간 10·매시 5·배치 0 — [정본](dagster-tenant-fairness.md). Map·weather 적용 PR은 각 저장소.
   - [ ] **적용**: instance digest `f2e05ba6…` → `1e05358a…`(n150), odroid 파생 `3cecfb0d…` → `e8b5e65b…` — 각 호스트 plane 수렴.
