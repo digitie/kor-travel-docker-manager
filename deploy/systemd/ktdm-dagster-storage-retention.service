@@ -1,13 +1,10 @@
 [Unit]
 Description=Kor Travel shared Dagster storage retention (runs, event logs, stopped-instigator ticks)
 After=docker.service
-Requires=docker.service
 
 [Service]
 Type=oneshot
 ExecStart=/opt/kor-travel-docker-manager/backend/.venv/bin/python -I -m kor_travel_docker_manager.dagster_storage_retention --apply
 # 설정의 max_runtime_seconds(45분)보다 넉넉히. 배치 하나가 statement timeout(60초)+여유 안에 끝난다.
+# 부하는 배치 크기와 쉼(설정)이 정한다 — 일은 PostgreSQL backend가 하므로 이 프로세스의 nice·IO 등급은 효과가 없다.
 TimeoutStartSec=55min
-Nice=10
-IOSchedulingClass=best-effort
-IOSchedulingPriority=7

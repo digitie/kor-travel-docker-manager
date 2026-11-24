@@ -17,7 +17,7 @@
   설정 키가 없어 Common `_daemon_pool_plugin.py`·`dagster_webserver.py` 변경 → wheel vendor → host 이미지 tag.
 - [x] **멈춘 instigator의 옛 tick·runs·event_logs 보존**(2026-11-24 소유자 결정, ADR-66): Manager 주간 정리 job — run SUCCESS 90일·
   실패 180일, 멈춘 instigator tick 14일. [정본](dagster-storage-retention.md).
-  - [ ] **설치**(각 호스트): Manager 설치 → dry-run 확인(n150 tick 약 7.06만·run 0, odroid tick 325) → `--apply` 한 번 →
+  - [ ] **설치**(각 호스트): Manager 설치 → dry-run 확인(n150 tick 약 7.06만·run 0, odroid tick 326) → `--apply` 한 번 →
     `ktdm-dagster-storage-retention.timer` 설치·활성.
 - [x] **공정성 상한·`dagster/priority`**(2026-11-24 소유자 결정, ADR-65): n150 location 상한 Map 4·PinVi 2·Concierge 2(전역 6),
   odroid 그대로(근거 주석). priority 실시간 10·매시 5·배치 0 — [정본](dagster-tenant-fairness.md). Map·weather 적용 PR은 각 저장소.

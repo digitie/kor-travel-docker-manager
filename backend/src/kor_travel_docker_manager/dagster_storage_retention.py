@@ -48,7 +48,9 @@ DAGSTER_VERSION = "1.13.24"
 DAGSTER_STORAGE_REVISION = "29b539ebc72a"
 
 CONFIG_PATH = Path("config/dagster-storage-retention.yml")
-LOCK_PATH = Path("/run/lock/ktdm-dagster-storage-retention.lock")
+#: tmpfiles.d가 부팅 때 root 0700으로 만드는 Manager lock 디렉터리 아래 — `/run/lock` 바로 아래(1777 sticky)는 다른 사용자가
+#: 같은 이름을 먼저 만들어 root의 열기를 막거나(`fs.protected_regular`) flock을 쥘 수 있다(`deploy/tmpfiles.d`).
+LOCK_PATH = Path("/run/lock/kor-travel-docker-manager/dagster-storage-retention.lock")
 _APPLICATION_NAME = "ktdm-dagster-storage-retention"
 _SELECTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,255}$")
 
@@ -57,7 +59,9 @@ Emit = Callable[[dict[str, Any]], None]
 
 
 class RetentionError(Exception):
-    """정리 실패. 메시지는 journal로 가므로 비밀을 담지 않는다."""
+    """정리 실패. 메시지는 journal로 가므로 비밀을 담지 않는다. `deleted`는 실패 전에 커밋한 양이다."""
+
+    deleted: dict[str, int] | None = None
 
 
 # --------------------------------------------------------------------------- 설정
@@ -138,8 +142,19 @@ def parse_policy(document: Any) -> Policy:
     )
 
 
+def _install_root() -> Path:
+    """설치본은 wheel이라 `get_project_root()`(`__file__` 기준)가 venv 안을 가리킨다 — trusted 설치 root를 쓴다."""
+
+    from kor_travel_docker_manager.services.trusted_install import (
+        TRUSTED_INSTALL_ROOT,
+        running_from_trusted_install_root,
+    )
+
+    return TRUSTED_INSTALL_ROOT if running_from_trusted_install_root() else Path(get_project_root())
+
+
 def load_policy(path: Path | None = None) -> Policy:
-    target = path or Path(get_project_root()) / CONFIG_PATH
+    target = path or _install_root() / CONFIG_PATH
     try:
         text = target.read_text(encoding="utf-8")
     except OSError as exc:
@@ -155,53 +170,97 @@ def load_policy(path: Path | None = None) -> Policy:
 
 _NOW = "(now() AT TIME ZONE 'UTC')"
 
-#: run `r`을 지워도 되는가 — 나이·상태 밖의 보호. dry-run과 apply가 같은 문장을 쓴다.
-_RUN_PROTECTIONS = f"""
-    -- 자산 카탈로그가 가리키는 마지막 run(`asset_keys.last_run_id`)
-    AND r.run_id NOT IN (SELECT ak.last_run_id FROM asset_keys ak WHERE ak.last_run_id IS NOT NULL)
-    -- 자산의 (asset_key, event 종류, partition)별 최신 event를 가진 run — 지우면 자산·partition 상태가 바뀐다
-    AND NOT EXISTS (
-      SELECT 1 FROM event_logs e
-      WHERE e.run_id = r.run_id AND e.asset_key IS NOT NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM event_logs n
-          WHERE n.asset_key = e.asset_key AND n.dagster_event_type = e.dagster_event_type AND n.id > e.id
-            AND (n.partition = e.partition OR (n.partition IS NULL AND e.partition IS NULL))))
-    -- asset check (asset_key, check_name)별 최신 실행
-    AND NOT EXISTS (
-      SELECT 1 FROM asset_check_executions c
-      WHERE c.run_id = r.run_id
-        AND NOT EXISTS (
-          SELECT 1 FROM asset_check_executions n
-          WHERE n.asset_key = c.asset_key AND n.check_name = c.check_name AND n.id > c.id))
-    -- 남는 run이 부모·root로 가리키는 run(재실행·재시도 계보)
-    AND NOT EXISTS (
-      SELECT 1 FROM run_tags t JOIN runs child ON child.run_id = t.run_id
-      WHERE t.key IN ('dagster/parent_run_id', 'dagster/root_run_id') AND t.value = r.run_id
-        AND child.run_id <> r.run_id
-        AND NOT (
-          (child.status = 'SUCCESS'
-             AND child.update_timestamp < {_NOW} - make_interval(days => :success_days))
-          OR (child.status IN ('FAILURE', 'CANCELED')
-             AND child.update_timestamp < {_NOW} - make_interval(days => :failure_days))))
-    -- 아직 있는 backfill의 run
-    AND (r.backfill_id IS NULL OR NOT EXISTS (SELECT 1 FROM bulk_actions b WHERE b.key = r.backfill_id))
-    -- concurrency slot·대기 step을 쥔 run(종료 run이면 Dagster가 이미 풀었어야 한다 — 손대지 않는다)
-    AND NOT EXISTS (SELECT 1 FROM concurrency_slots s WHERE s.run_id = r.run_id)
-    AND NOT EXISTS (SELECT 1 FROM pending_steps p WHERE p.run_id = r.run_id)
-"""
+#: 계보 묶음: Dagster는 재실행·자동 재시도 run에 `dagster/root_run_id`(모든 후손)와 `dagster/parent_run_id`(직계)를 단다
+#: (`RunDomain.create_reexecuted_run`). 묶음 키는 `coalesce(root tag, run_id)`이고 묶음은 **통째로만** 지운다 — 한 run이라도
+#: 남아야 하면(나이·상태·아래 보호) 묶음 전체를 남긴다. 남는 run의 조상이 지워지면 FROM_FAILURE 재실행이
+#: `DagsterRunNotFoundError`로, `get_run_group`이 예외로 깨진다(2026-11-24 적대 리뷰 P1, Dagster `plan/state.py`·
+#: `sql_run_storage.get_run_group`).
+_ROOT_TAG = "'dagster/root_run_id'"
 
-_AGED_RUNS = f"""
-  SELECT r.run_id FROM runs r
+
+def _expired(m: str) -> str:
+    """run `m`이 종료 상태이고 그 상태의 보존 일수를 넘겼다. 진행 중·대기 상태는 나이와 무관하게 거짓이다."""
+
+    return f"""(
+        ({m}.status = 'SUCCESS' AND {m}.update_timestamp < {_NOW} - make_interval(days => :success_days))
+        OR ({m}.status IN ('FAILURE', 'CANCELED')
+            AND {m}.update_timestamp < {_NOW} - make_interval(days => :failure_days)))"""
+
+
+def _member_must_stay(m: str) -> str:
+    """run `m`이 남아야 하면 참. 나이·상태와 자산·check·backfill·slot 보호."""
+
+    return f"""(
+      NOT {_expired(m)}
+      -- 자산 카탈로그가 가리키는 마지막 run(`asset_keys.last_run_id`)
+      OR {m}.run_id IN (SELECT ak.last_run_id FROM asset_keys ak WHERE ak.last_run_id IS NOT NULL)
+      -- 자산의 (asset_key, event 종류, partition)별 최신 event를 가진 run — 지우면 자산·partition 상태가 바뀐다
+      OR EXISTS (
+        SELECT 1 FROM event_logs e
+        WHERE e.run_id = {m}.run_id AND e.asset_key IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM event_logs n
+            WHERE n.asset_key = e.asset_key AND n.dagster_event_type = e.dagster_event_type AND n.id > e.id
+              AND (n.partition = e.partition OR (n.partition IS NULL AND e.partition IS NULL))))
+      -- asset check (asset_key, check_name, partition)별 최신 실행
+      OR EXISTS (
+        SELECT 1 FROM asset_check_executions c
+        WHERE c.run_id = {m}.run_id
+          AND NOT EXISTS (
+            SELECT 1 FROM asset_check_executions n
+            WHERE n.asset_key = c.asset_key AND n.check_name = c.check_name
+              AND n.partition IS NOT DISTINCT FROM c.partition AND n.id > c.id))
+      -- 아직 있는 backfill의 run
+      OR ({m}.backfill_id IS NOT NULL AND EXISTS (SELECT 1 FROM bulk_actions b WHERE b.key = {m}.backfill_id))
+      -- concurrency slot·대기 step을 쥔 run(종료 run이면 Dagster가 이미 풀었어야 한다 — 손대지 않는다)
+      OR EXISTS (SELECT 1 FROM concurrency_slots s WHERE s.run_id = {m}.run_id)
+      OR EXISTS (SELECT 1 FROM pending_steps p WHERE p.run_id = {m}.run_id))"""
+
+
+def _members(group: str) -> str:
+    """계보 묶음 `group`(root run_id)의 run 전부 — root 자신과 root tag가 그것인 run."""
+
+    return f"""(
+        SELECT m.* FROM runs m WHERE m.run_id = {group}
+        UNION ALL
+        SELECT m.* FROM run_tags t JOIN runs m ON m.run_id = t.run_id
+        WHERE t.key = {_ROOT_TAG} AND t.value = {group} AND m.run_id <> {group})"""
+
+
+#: 지울 수 있는 계보 묶음의 씨앗: 이 상태·나이의 run(`idx_run_range`)이 속한 묶음.
+_SEED_GROUPS = f"""
+  SELECT DISTINCT coalesce(rt.value, r.run_id) AS root
+  FROM runs r
+  LEFT JOIN run_tags rt ON rt.run_id = r.run_id AND rt.key = {_ROOT_TAG}
   WHERE r.status = :'status'
     AND r.update_timestamp < {_NOW} - make_interval(days => :days)
 """
 
+#: 묶음의 run이 하나도 남을 필요가 없을 때만 지운다(묶음 별칭 `g`).
+_GROUP_IS_DELETABLE = f"""
+  NOT EXISTS (SELECT 1 FROM {_members("g.root")} mm WHERE {_member_must_stay("mm")})
+"""
+
+_GROUP_RUNS = """
+  SELECT m.run_id FROM runs m WHERE m.run_id IN (SELECT root FROM groups)
+  UNION
+  SELECT t.run_id FROM run_tags t WHERE t.key = 'dagster/root_run_id' AND t.value IN (SELECT root FROM groups)
+"""
+
+#: dry-run 집계는 상태를 가르지 않고 한 번에 센다 — 계보 묶음은 상태가 섞일 수 있어(실패 부모·성공 재실행) 상태별로
+#: 세면 같은 묶음을 두 번 센다.
 PLAN_RUNS_SQL = f"""
-WITH aged AS ({_AGED_RUNS}),
-eligible AS ({_AGED_RUNS} {_RUN_PROTECTIONS})
+WITH aged AS (SELECT r.run_id, r.status FROM runs r WHERE {_expired("r")}),
+seeds AS (
+  SELECT DISTINCT coalesce(rt.value, a.run_id) AS root
+  FROM aged a LEFT JOIN run_tags rt ON rt.run_id = a.run_id AND rt.key = {_ROOT_TAG}
+),
+groups AS (SELECT g.root FROM seeds g WHERE {_GROUP_IS_DELETABLE}),
+eligible AS ({_GROUP_RUNS})
 SELECT json_build_object(
-  'aged', (SELECT count(*) FROM aged),
+  'aged_by_status', coalesce((SELECT json_object_agg(status, n) FROM (
+      SELECT status, count(*) AS n FROM aged GROUP BY status) x), '{{}}'::json),
+  'groups', (SELECT count(*) FROM groups),
   'eligible', (SELECT count(*) FROM eligible),
   'event_logs', (SELECT count(*) FROM event_logs WHERE run_id IN (SELECT run_id FROM eligible)),
   'run_tags', (SELECT count(*) FROM run_tags WHERE run_id IN (SELECT run_id FROM eligible)),
@@ -211,13 +270,14 @@ SELECT json_build_object(
       WHERE run_id IN (SELECT run_id FROM eligible)));
 """
 
-#: run 한 배치. 모든 CTE가 같은 snapshot을 본다. run_tags는 FK `ON DELETE CASCADE`로 같이 지워진다.
+#: run 한 배치 = 계보 묶음 :batch개(대개 run 하나짜리 묶음). 모든 CTE가 같은 snapshot을 본다. run_tags는 FK
+#: `ON DELETE CASCADE`로 같이 지워진다. 행 lock은 DELETE가 잡고 `lock_timeout`이 대기를 끊는다.
 DELETE_RUNS_SQL = f"""
-WITH batch AS (
-  {_AGED_RUNS} {_RUN_PROTECTIONS}
-  ORDER BY r.update_timestamp, r.id
+WITH groups AS (
+  SELECT g.root FROM ({_SEED_GROUPS}) g
+  WHERE {_GROUP_IS_DELETABLE}
   LIMIT :batch
-  FOR UPDATE OF r SKIP LOCKED
+), batch AS ({_GROUP_RUNS}
 ), run_tag_rows AS (
   SELECT count(*) AS n FROM run_tags WHERE run_id IN (SELECT run_id FROM batch)
 ), deleted_asset_event_tags AS (
@@ -232,6 +292,7 @@ WITH batch AS (
   DELETE FROM runs WHERE run_id IN (SELECT run_id FROM batch) RETURNING 1
 )
 SELECT json_build_object(
+  'groups', (SELECT count(*) FROM groups),
   'runs', (SELECT count(*) FROM deleted_runs),
   'event_logs', (SELECT count(*) FROM deleted_events),
   'run_tags', (SELECT n FROM run_tag_rows),
@@ -247,7 +308,12 @@ STALE_SELECTORS_SQL = f"""
 SELECT json_build_object(
   'selectors', coalesce((
     SELECT json_agg(json_build_object(
-        'selector', s.selector_id, 'ticks', s.n, 'instigator', coalesce(i.status, 'ABSENT'))
+        'selector', s.selector_id, 'ticks', s.n, 'instigator', coalesce(i.status, 'ABSENT'),
+        -- 사람이 dry-run에서 무엇인지 알아보게(표시용, 판정에 쓰지 않는다)
+        'name', coalesce(
+          substring(i.instigator_body from '"origin":.*?"(?:instigator_name|job_name)": "([^"]+)"'),
+          (SELECT substring(x.tick_body from '"(?:instigator_name|job_name)": "([^"]+)"')
+             FROM job_ticks x WHERE x.selector_id = s.selector_id ORDER BY x.timestamp DESC LIMIT 1)))
       ORDER BY s.n DESC, s.selector_id)
     FROM (
       SELECT t.selector_id, count(*) AS n FROM job_ticks t
@@ -256,6 +322,10 @@ SELECT json_build_object(
     ) s
     LEFT JOIN instigators i ON i.selector_id = s.selector_id
     WHERE i.status IS DISTINCT FROM 'RUNNING'
+      -- DECLARED_IN_CODE 행은 workspace에 있고 code 기본값으로 도는 instigator다 — Dagster scheduler는 돌지 않는 것을
+      -- 지우고 남은 것을 갱신한다(`_scheduler/scheduler.py`). 창 안에 갱신됐으면 살아 있는 것으로 보고 손대지 않는다.
+      -- instigator 행이 없으면(i.status NULL) 이 조건이 NULL이 되어 행을 버리지 않게 coalesce한다.
+      AND NOT (coalesce(i.status, '') = 'DECLARED_IN_CODE' AND i.update_timestamp >= {_TICK_CUTOFF})
       AND NOT EXISTS (
         SELECT 1 FROM job_ticks recent
         WHERE recent.selector_id = s.selector_id AND recent.timestamp >= {_TICK_CUTOFF})
@@ -274,7 +344,8 @@ WITH deleted AS (
       LIMIT :batch
       FOR UPDATE SKIP LOCKED)
     AND NOT EXISTS (
-      SELECT 1 FROM instigators i WHERE i.selector_id = :'selector' AND i.status = 'RUNNING')
+      SELECT 1 FROM instigators i WHERE i.selector_id = :'selector'
+        AND (i.status = 'RUNNING' OR (i.status = 'DECLARED_IN_CODE' AND i.update_timestamp >= {_TICK_CUTOFF})))
     AND NOT EXISTS (
       SELECT 1 FROM job_ticks recent
       WHERE recent.selector_id = :'selector' AND recent.timestamp >= {_TICK_CUTOFF})
@@ -294,6 +365,13 @@ SELECT json_build_object(
 # 최신 행은 기본 키 역순 1행으로 읽는다 — `max(update_timestamp)`는 그 열만의 인덱스가 없어 표 전체를 읽는다
 # (odroid 2026-11-24 실측 16초).
 _MAX_AHEAD_SECONDS = 3600
+
+#: 쓰기 트랜잭션의 첫 문장. schema 판이 다르면 예외로 트랜잭션 전체를 되돌린다(ON_ERROR_STOP).
+_SCHEMA_GUARD = (
+    "DO $guard$ BEGIN IF (SELECT string_agg(version_num, ',' ORDER BY version_num) FROM alembic_version) "
+    f"IS DISTINCT FROM '{DAGSTER_STORAGE_REVISION}' THEN "
+    "RAISE EXCEPTION 'ktdm retention: Dagster storage schema changed'; END IF; END $guard$;\n"
+)
 
 
 # --------------------------------------------------------------------------- storage
@@ -323,6 +401,9 @@ class Storage:
             + f"SET LOCAL statement_timeout = '{int(statement)}s';\n"
             + f"SET LOCAL lock_timeout = '{int(policy.lock_timeout_seconds)}s';\n"
             + f"SET LOCAL idle_in_transaction_session_timeout = '{int(statement)}s';\n"
+            # 쓰기 배치마다 같은 트랜잭션 안에서 schema 판을 다시 본다 — 45분 실행 중 storage migrate가 Dagster를 올리면
+            # 그 뒤 배치는 검토하지 않은 schema에서 지우게 된다(2026-11-24 적대 리뷰 P2).
+            + (_SCHEMA_GUARD if write else "")
             + sql.strip() + "\nCOMMIT;\n"
         )
         argv = [
@@ -347,8 +428,10 @@ class Storage:
         except OSError as exc:
             raise RetentionError(f"docker를 실행할 수 없습니다: {exc.strerror or exc}") from exc
         if completed.returncode != 0:
-            tail = (completed.stderr or "").strip().splitlines()[-1:] or ["(stderr 없음)"]
-            raise RetentionError(f"storage 질의 실패(exit {completed.returncode}): {tail[0][:300]}")
+            # psql은 ERROR 뒤에 CONTEXT·caret 줄을 더 찍는다 — 원인 줄을 고른다.
+            lines = (completed.stderr or "").strip().splitlines()
+            cause = next((line for line in lines if "ERROR:" in line), lines[-1] if lines else "(stderr 없음)")
+            raise RetentionError(f"storage 질의 실패(exit {completed.returncode}): {cause[:300]}")
         text = (completed.stdout or "").strip()
         try:
             return json.loads(text)
@@ -390,11 +473,10 @@ def single_instance(path: Path = LOCK_PATH) -> Iterator[bool]:
 
 
 def _plan(storage: Storage, policy: Policy) -> dict[str, Any]:
-    runs: dict[str, Any] = {}
-    for status, days in policy.run_classes:
-        runs[status] = {
-            "days": days, **storage.query(PLAN_RUNS_SQL, _run_variables(policy, status, days), write=False, plan=True),
-        }
+    runs = storage.query(PLAN_RUNS_SQL, {
+        "success_days": policy.success_days, "failure_days": policy.failure_days,
+    }, write=False, plan=True)
+    runs["days"] = {status: days for status, days in policy.run_classes}
     ticks = storage.query(STALE_SELECTORS_SQL, {"tick_days": policy.stopped_instigator_tick_days}, write=False)
     by_state: dict[str, dict[str, int]] = {}
     for row in ticks["selectors"]:
@@ -409,6 +491,9 @@ def _plan(storage: Storage, policy: Policy) -> dict[str, Any]:
             "ticks": sum(int(row["ticks"]) for row in ticks["selectors"]),
             "by_instigator_state": by_state,
             "legacy_null_selector_ticks_untouched": ticks["legacy_null_selector_ticks"],
+            # 첫 apply 전에 사람이 무엇을 지우는지 알아보게(이름은 표시용).
+            "detail": [{key: row.get(key) for key in ("name", "instigator", "ticks")}
+                       for row in ticks["selectors"][:200]],
         },
     }
 
@@ -443,11 +528,29 @@ def run(
     totals: dict[str, int] = {
         "ticks": 0, "runs": 0, "event_logs": 0, "run_tags": 0, "asset_event_tags": 0, "asset_check_executions": 0,
     }
-    budget_exhausted = False
 
     def out_of_time() -> bool:
         return clock() - started >= policy.max_runtime_seconds
 
+    try:
+        budget_exhausted = _apply(storage, policy, totals, emit, out_of_time, clock, sleep, started)
+    except RetentionError as exc:
+        # 이미 커밋한 배치는 그대로다 — summary에 지운 양을 함께 남긴다.
+        exc.deleted = dict(totals)
+        raise
+    return {
+        "mode": "apply", "ok": True, "deleted": totals,
+        # 시간 상한에 걸리면 남은 것은 다음 주에 이어 지운다 — 실패가 아니다.
+        "budget_exhausted": budget_exhausted,
+        "elapsed_seconds": round(clock() - started, 1),
+    }
+
+
+def _apply(
+    storage: Storage, policy: Policy, totals: dict[str, int], emit: Emit, out_of_time: Callable[[], bool],
+    clock: Callable[[], float], sleep: Callable[[float], None], started: float,
+) -> bool:
+    budget_exhausted = False
     selectors = storage.query(STALE_SELECTORS_SQL, {"tick_days": policy.stopped_instigator_tick_days}, write=False)
     for row in selectors["selectors"]:
         selector = str(row["selector"])
@@ -484,16 +587,11 @@ def run(
                 totals[key] += int(result[key])
             emit({"event": "batch", "phase": "runs", "status": status, **result,
                   "elapsed_seconds": round(clock() - started, 1)})
-            if int(result["runs"]) < policy.run_batch:
+            if int(result["groups"]) < policy.run_batch:
                 break
             sleep(policy.pause_seconds)
 
-    return {
-        "mode": "apply", "ok": True, "deleted": totals,
-        # 시간 상한에 걸리면 남은 것은 다음 주에 이어 지운다 — 실패가 아니다.
-        "budget_exhausted": budget_exhausted,
-        "elapsed_seconds": round(clock() - started, 1),
-    }
+    return budget_exhausted
 
 
 def _emit_line(record: dict[str, Any]) -> None:
@@ -508,15 +606,20 @@ def main(argv: list[str] | None = None) -> int:
     result: dict[str, Any]
     try:
         policy = load_policy(options.config)
+        if os.geteuid() != 0:
+            raise RetentionError("root로 실행해야 합니다(공용 PG 컨테이너 docker exec·Manager lock 디렉터리).")
         with single_instance() as acquired:
             if not acquired:
-                result = {"ok": True, "state": "already_running"}
+                # 다른 정리가 돌고 있다 — 이번 실행은 아무것도 하지 않았으므로 성공으로 보고하지 않는다.
+                result = {"ok": False, "state": "already_running"}
             else:
                 storage = discover_storage(policy)
                 result = run(storage, policy, apply=options.apply, emit=_emit_line)
     except (RetentionError, OSError, KeyError, TypeError, ValueError) as exc:
         result = {"ok": False, "mode": "apply" if options.apply else "dry-run",
                   "error": type(exc).__name__, "message": str(exc)[:500]}
+        if getattr(exc, "deleted", None) is not None:
+            result["deleted"] = exc.deleted
     _emit_line({"event": "summary", **result})
     return 0 if result["ok"] else 1
 

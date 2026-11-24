@@ -2033,7 +2033,8 @@ instigator의 tick은 남는다(n150 약 7.1만 행). n150 event_logs 2.0 GB·jo
 
 Manager가 두 plane 공통 설정(`config/dagster-storage-retention.yml`)으로 주 1회(일요일 06:10 KST, systemd timer) 정리한다:
 종료 run SUCCESS 90일·FAILURE·CANCELED 180일(그 run의 event_logs·run_tags·asset_event_tags·asset_check_executions 포함),
-RUNNING이 아니고 14일 안에 tick이 없는 instigator의 14일 넘은 tick. 자산 상태·재실행 계보·backfill·concurrency를 쥔 run은 남긴다.
+RUNNING이 아니고(14일 안에 갱신된 DECLARED_IN_CODE도 제외) 14일 안에 tick이 없는 instigator의 14일 넘은 tick. 자산 상태·backfill·
+concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째로만 지운다.
 배치 트랜잭션·statement/lock timeout·진행 로그·dry-run 기본. 자세히는 [dagster-storage-retention.md](dagster-storage-retention.md).
 
 ### 근거
@@ -2045,14 +2046,15 @@ RUNNING이 아니고 14일 안에 tick이 없는 instigator의 14일 넘은 tick
 
 ### 결과(긍정)
 
-- 첫 실행이 n150 tick 약 7.1만 행·odroid 325행을 지운다. run 삭제는 n150 2026-12-29·odroid 2027-01-12 무렵부터 주 1만·5천 run 안팎.
+- 첫 실행이 n150 tick 약 7.1만 행·odroid 326행을 지운다. run 삭제는 n150 2026-12-29·odroid 2027-01-12 무렵부터 주 1만·5천 run 안팎.
 - 실제 Dagster storage 시험으로 고아 0과 정리 뒤 Dagster 읽기를 결박했다.
 
 ### 결과(부정)·잃는 것
 
 - 90일(실패 180일) 넘은 run의 로그·event를 UI에서 볼 수 없다. compute log 파일은 이 job이 아니라 code-server별 정리가 맡는다.
 - 파일 크기는 줄지 않는다(행 자리 재사용). Dagster를 올리면 이 job은 재검토 전까지 멈춘다(의도).
-- 재실행 계보의 자식이 다른 보호로 남고 부모만 나이가 차면 부모가 먼저 지워질 수 있다(`delete_run`과 같은 한계, 드묾).
+- 계보 묶음은 통째로만 지우므로, 한 run이 오래 보호되면(자산 최신 event 등) 그 묶음의 다른 run도 함께 남는다.
+- 정리 시작 뒤 90일 넘은 run을 재실행하면 새 자식은 판정 snapshot에 없어 조상이 지워질 수 있다(받아들인 경합).
 
 ### 후속
 
