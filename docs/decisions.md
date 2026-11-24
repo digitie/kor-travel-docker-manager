@@ -2039,7 +2039,7 @@ concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째
 
 ### 근거
 
-- Dagster `delete_run`과 같은 표를 같은 순서로 지우되 SQL 한 트랜잭션으로 옮겼다 — 배치·timeout을 걸 수 있고, `delete_run`이
+- Dagster `delete_run`과 같은 표들을 지우되 SQL 한 트랜잭션으로 옮겼다 — 배치·timeout을 걸 수 있고, `delete_run`이
   지우는 자산의 최신 event를 남기며, `delete_run`이 남기는 asset_check_executions 고아를 지운다.
 - Dagster를 import하지 않으므로 검토한 schema 판(1.13.24, `29b539ebc72a`)에서만 돈다. host 이미지 핀과 시험으로 결박했다.
 - 공용 Dagster 밖(systemd)이라 plane이 멈춰도 돈다. storage 접근은 백업·수집 감시와 같은 길이라 새 비밀·role이 없다.

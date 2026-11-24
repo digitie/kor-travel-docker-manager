@@ -75,9 +75,10 @@ SQL 재검토를 요구한다. 손대지 않는 표: `snapshots`(job·실행 계
   0700으로 만드는 디렉터리)으로 막는다. 다른 정리가 돌고 있으면 `ok: false, state: already_running`, exit 1. root로만 돈다.
   배포 lock(G)은 잡지 않는다 — 한 시간 가까이 배포를 막지 않으려고. 배포·storage migrate와 겹치면 `lock_timeout`(5초)이 그 배치를
   실패시킨다(우리 배치가 lock을 쥔 동안 migrate의 DDL은 최대 statement 60초 기다린다).
+- lock 디렉터리는 tmpfiles.d(trusted installer가 설치)가 만든다 — 없으면 열기가 실패해 exit 1로 끝난다(아무것도 지우지 않는다).
 - 설정 파일 자리: 설치본은 wheel이라 trusted 설치 root(`/opt/kor-travel-docker-manager`)의 `config/`를 읽는다(개발 checkout은 저장소 root).
 - dry-run의 run 집계는 지울 run 전부를 한 읽기 전용 문장으로 세므로 상한이 따로다(`timeouts.plan_statement_seconds` 600초 —
-  2026-11-24 30일 가정 실측(계보 묶음 판정 포함): n150 2.5만 run 14초, odroid 5.4천 run 55초). apply의 배치는 200 run씩이라 60초 상한 안이다.
+  2026-11-24 30일 가정 실측(계보 묶음 판정 포함): n150 2.5만 run 14초, odroid 5.4천 run 55초). apply의 배치는 계보 묶음 200개씩이라 60초 상한 안이다.
 - 출력: JSON 한 줄씩 — 배치마다 `{"event": "batch", "phase": …}`, 끝에 `{"event": "summary", …}`. journal에 남는다.
 - schema 재확인은 쓰기 트랜잭션의 첫 문장이라, 그것과 DELETE 문장 사이(밀리초)에 storage migrate가 commit하는 경합은 남는다.
 - 성능 관찰: 보호로 남는 계보 묶음이 쌓이면 배치마다 씨앗을 다시 훑는다. 첫 실제 run 삭제(n150 2026-12-29 무렵) 뒤 배치 `elapsed`를
