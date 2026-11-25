@@ -954,10 +954,18 @@ PinVi ETL `pinvi_email_outbox`는 `app.email_queue` 집계만 한다. 그래서 
 - `PINVI_RESEND_WEBHOOK_SECRET`(비밀, `SECRET` 가림 조각) — delivery webhook(`/webhooks/resend`) Svix secret. 비면 webhook만
   503으로 닫히고 기동은 그대로다.
 - `PINVI_WEB_BASE_URL`(비밀 아님) — 메일 링크·OAuth 복귀·공유 링크의 web origin. compose 기본값은 PinVi 앱 기본값과 같은
-  `http://localhost:12805`라 배선만으로 동작은 바뀌지 않는다. 수신자가 여는 공개 origin을 root `.env`에 둔다.
+  `http://localhost:12805`라 배선만으로 동작은 바뀌지 않는다. 수신자가 여는 공개 origin을 root `.env`에 둔다. 이 값은 PinVi
+  관리자 `/admin/system`의 `pinvi_web` 점검 대상이기도 하다 — 공개 origin으로 바꾸면 그 점검도 공개 origin으로 나가므로 n150에서
+  그 origin이 닿지 않으면(hairpin NAT·접근 제어) web이 degraded로 보인다.
 - **켜기**: root `.env`에 값 → Manager 설치 → compose에서 `pinvi-api`를 다시 만드는 경로로 적용(7.5a와 같은 이유로
   `service-release apply-core-candidate pinvi`는 실행 중 env를 보존하므로 새 이름이 들어가지 않는다) → 컨테이너 env에 이름이
   있는지(값은 출력하지 않는다)와 기동 로그에 `pinvi.email.config_warning`이 없는지 확인.
+  - **env와 PinVi 이미지는 한 번의 재생성으로 함께** 적용한다. PinVi #801 이후 Resend 401·403은 재시도 없이 바로 failed라, 둘 사이
+    공백에 쌓인 메일은 관리자 재발송 대상이 된다(재발송 때 링크는 현재 origin으로 다시 만들어진다).
+  - compose 재생성은 메일 env만이 아니라 candidate 경로가 보존해 온 실행 중 env와 root `.env`의 차이 **전부**를 함께 적용한다.
+    재생성 전에 실행 중 컨테이너와 렌더 결과(`docker compose config pinvi-api`)의 env 이름 집합과 값 sha256을 비교해 메일 env 밖의
+    차이가 없는지(있으면 그 차이가 의도인지 — 7.5a의 planner 키처럼 다른 서비스와 짝인 값) 확인하고, 이미지가 의도한 PinVi
+    리비전인지(`PINVI_API_IMAGE`) 확인한다.
 - 결박: `backend/tests/test_pinvi_resend_env_wiring.py`(렌더된 compose에서 값 도달·빈 값·web origin 기본값·pinvi-api 외 비수신·
   key·secret 가림·`.env.example` 빈 자리).
 

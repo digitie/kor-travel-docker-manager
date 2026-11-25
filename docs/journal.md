@@ -10,6 +10,8 @@
   secret은 기존 `API_KEY`·`SECRET` 조각에 걸린다. C6c는 pinvi-api env를 정확 목록으로 묶지 않아 바꿀 것이 없다.
 - 적용 경로 주의: `apply-core-candidate pinvi`는 env 보존이라 이 경로로는 새 이름이 들어가지 않는다(docker-management.md 7.5b).
 - 시험: `backend/tests/test_pinvi_resend_env_wiring.py`(5건). 관련 compose·가림 시험 385건 통과(WSL).
+- 적대 리뷰 반영(문서): `PINVI_WEB_BASE_URL`이 PinVi `/admin/system` `pinvi_web` 점검 대상이라는 영향, env·이미지 한 번의 재생성,
+  재생성 전 실행 중 env와 렌더 결과의 이름 집합·값 sha256 비교(candidate 경로가 보존한 차이 전부가 함께 적용된다).
 
 ## 2026-11-25 — 공용 Dagster role 연결 한도 45 → 60(설정 키)·연결 수 경보(ADR-68)
 
