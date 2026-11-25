@@ -1,3 +1,18 @@
+## 2026-11-25 — PinVi 메일(Resend) env 배선(`PINVI_RESEND_FROM_EMAIL`·`PINVI_RESEND_WEBHOOK_SECRET`·`PINVI_WEB_BASE_URL`)
+
+- 출처: PinVi #720. n150 `trip_invite` 7통이 Resend 403으로 5회씩 실패. compose가 `PINVI_RESEND_API_KEY`만 넘겨 PinVi가 개발용 기본 발신
+  주소(`send.pinvi.local`)를 썼다. 읽기 전용 확인(env 이름만, 값 미출력): `pinvi-api-latest` env에 `PINVI_RESEND_*`는 API key 하나,
+  `PINVI_WEB_BASE_URL` 없음 → 앱이 읽은 web origin은 `http://localhost:12805`(메일 링크가 수신자에게 열리지 않는다).
+- PinVi 원문(#720 PR) 확인: 메일은 pinvi-api outbox worker만 보낸다(ETL은 집계만). 빈 `PINVI_RESEND_FROM_EMAIL`은 기본값으로 읽고(새
+  validator), 빈 webhook secret은 webhook만 503, 빈 API key는 콘솔 모드 — `${…:-}`는 기동을 막지 않는다. `PINVI_WEB_BASE_URL`은 빈 값
+  validator가 없어 compose 기본값을 앱 기본값과 같은 `http://localhost:12805`로 둔다(배선만, 동작 불변).
+- 배선: 세 이름을 pinvi-api에만. `.env.example`에 `PINVI_RESEND_API_KEY`(종전 누락)를 포함한 네 빈 자리. 가림: API key·webhook
+  secret은 기존 `API_KEY`·`SECRET` 조각에 걸린다. C6c는 pinvi-api env를 정확 목록으로 묶지 않아 바꿀 것이 없다.
+- 적용 경로 주의: `apply-core-candidate pinvi`는 env 보존이라 이 경로로는 새 이름이 들어가지 않는다(docker-management.md 7.5b).
+- 시험: `backend/tests/test_pinvi_resend_env_wiring.py`(5건). 관련 compose·가림 시험 385건 통과(WSL).
+- 적대 리뷰 반영(문서): `PINVI_WEB_BASE_URL`이 PinVi `/admin/system` `pinvi_web` 점검 대상이라는 영향, env·이미지 한 번의 재생성,
+  재생성 전 실행 중 env와 렌더 결과의 이름 집합·값 sha256 비교(candidate 경로가 보존한 차이 전부가 함께 적용된다).
+
 ## 2026-11-25 — 공용 Dagster role 연결 한도 45 → 60(설정 키)·연결 수 경보(ADR-68)
 
 - 소유자 결정: pool은 dev2 기본(24) 그대로, role `kor_travel_dagster_shared_app` 한도를 60으로. db-init의 리터럴 45 두 문장을

@@ -2265,6 +2265,16 @@ services:
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
+      # 메일 발신 주소(PinVi #720). 비우면 PinVi가 개발용 기본값 `Pinvi <noreply@send.pinvi.local>`을 쓰고 Resend가 403으로
+      # 거절한다(빈 값 = 기본값은 PinVi `config.py` validator). root `.env`에 Resend에서 verified인 도메인 주소를 둔다. 비밀 아님.
+      PINVI_RESEND_FROM_EMAIL: ${PINVI_RESEND_FROM_EMAIL:-}
+      # delivery webhook(`/webhooks/resend`)의 Svix secret(`whsec_...`). 비우면 webhook만 503으로 닫히고 기동은 그대로다. 비밀이다 —
+      # 가림 규칙 `secret_scrub`의 `SECRET`.
+      PINVI_RESEND_WEBHOOK_SECRET: ${PINVI_RESEND_WEBHOOK_SECRET:-}
+      # 메일 링크(인증·재설정·초대)·OAuth 복귀·공유 링크가 쓰는 web origin. 종전에는 넘기지 않아 PinVi 앱 기본값으로 메일 링크가
+      # localhost를 가리켰다(#720 읽기 전용 확인). 기본값은 그 앱 기본값과 같다(넘기기만 하고 동작은 바꾸지 않는다) — 수신자가 여는
+      # 공개 origin을 root `.env`에 둔다.
+      PINVI_WEB_BASE_URL: ${PINVI_WEB_BASE_URL:-http://localhost:12805}
       # PinVi 시스템 Telegram 봇 token(apps/api telegram_notify). 비우면 시스템 봇 알림은 skip.
       PINVI_TELEGRAM_BOT_TOKEN_DEFAULT: ${PINVI_TELEGRAM_BOT_TOKEN_DEFAULT:-}
       # 예약 알림 planner의 내부 경계(`/internal/telegram/plan`·`/plan/pending`, `X-Pinvi-Notification-Planner-Key`)를

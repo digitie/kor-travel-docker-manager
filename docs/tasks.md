@@ -1,3 +1,9 @@
+## 2026-11-25 — PinVi 메일(Resend) env 배선
+
+- [x] compose: `PINVI_RESEND_FROM_EMAIL`·`PINVI_RESEND_WEBHOOK_SECRET`·`PINVI_WEB_BASE_URL`(pinvi-api만), `.env.example` 네 빈 자리.
+- [ ] **n150 적용(부모·소유자)**: 소유자가 root `.env`에 발신 주소(Resend verified 도메인)·공개 web origin(·webhook을 쓰면 secret) →
+  Manager 설치 → compose에서 다시 만드는 경로로 pinvi-api 회전(PinVi #720 PR 이미지와 함께) → env 이름 존재·기동 경고 없음 확인.
+
 ## 2026-11-24 — PinVi 예약 알림 planner env 배선
 
 - [x] compose: `PINVI_TELEGRAM_PLANNER_KEY`(pinvi-api·code-server)·`PINVI_NOTIFICATION_PLANNER_API_URL`(code-server, API 포트 파생), 가림 규칙 `PLANNER_KEY`.

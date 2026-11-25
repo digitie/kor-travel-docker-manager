@@ -939,6 +939,37 @@ PinVi 예약 Telegram 알림은 code-server의 매분 schedule이 PinVi API의 �
 - 결박: `backend/tests/test_pinvi_etl_env_wiring.py`(두 서비스 수신·빈 값·URL == `--port`·registry `connection`·`.env`
   재정의 무시), `backend/tests/test_secret_scrub.py`(compose `*KEY` 이름 전부가 가림 규칙에 걸리는지).
 
+### 7.5b PinVi 메일(Resend) 발신 주소·webhook·링크 origin (2026-11-25)
+
+PinVi 메일(회원가입 인증·비밀번호 재설정·여행 초대)은 `pinvi-api`의 outbox worker(FastAPI lifespan)만 Resend REST로 보낸다.
+PinVi ETL `pinvi_email_outbox`는 `app.email_queue` 집계만 한다. 그래서 아래 이름은 모두 `pinvi-api`**에만** 간다.
+
+- 2026-11-08 n150에서 `trip_invite` 7통이 Resend 403으로 전부 실패했다(PinVi #720). compose가 `PINVI_RESEND_API_KEY`만 넘겨
+  PinVi가 개발용 기본 발신 주소 `Pinvi <noreply@send.pinvi.local>`으로 보냈다(`.local`은 Resend가 검증할 수 없다). 같은 읽기 전용
+  확인에서 `PINVI_WEB_BASE_URL`도 넘기지 않아 메일 링크가 PinVi 앱 기본값 `http://localhost:12805`를 가리켰다.
+- `PINVI_RESEND_API_KEY`(비밀, 종전부터) — 비면 PinVi 콘솔 모드(발송 안 함).
+- `PINVI_RESEND_FROM_EMAIL`(비밀 아님) — Resend에서 verified인 도메인의 주소. `${…:-}`라 비면 빈 문자열이 가고, PinVi
+  (#720 PR 이후)가 빈 값을 기본값으로 읽는다 — 기동을 막지 않지만 발송은 403이다. PinVi는 staging/production 기동 시 기본값·
+  예약/사설 도메인이면 `pinvi.email.config_warning`을 남기고, 403·422 같은 영구 거절은 재시도 없이 바로 failed로 닫는다.
+- `PINVI_RESEND_WEBHOOK_SECRET`(비밀, `SECRET` 가림 조각) — delivery webhook(`/webhooks/resend`) Svix secret. 비면 webhook만
+  503으로 닫히고 기동은 그대로다.
+- `PINVI_WEB_BASE_URL`(비밀 아님) — 메일 링크·OAuth 복귀·공유 링크의 web origin. compose 기본값은 PinVi 앱 기본값과 같은
+  `http://localhost:12805`라 배선만으로 동작은 바뀌지 않는다. 수신자가 여는 공개 origin을 root `.env`에 둔다. 이 값은 PinVi
+  관리자 `/admin/system`의 `pinvi_web` 점검 대상이기도 하다 — 공개 origin으로 바꾸면 그 점검도 공개 origin으로 나가므로 n150에서
+  그 origin이 닿지 않으면(hairpin NAT·접근 제어) web이 degraded로 보인다.
+- **켜기**: root `.env`에 값 → Manager 설치 → compose에서 `pinvi-api`를 다시 만드는 경로로 적용(7.5a와 같은 이유로
+  `service-release apply-core-candidate pinvi`는 실행 중 env를 보존하므로 새 이름이 들어가지 않는다) → 컨테이너 env에 이름이
+  있는지(값은 출력하지 않는다)와 기동 로그에 `pinvi.email.config_warning`이 없는지 확인.
+  - **env와 PinVi 이미지는 한 번의 재생성으로 함께** 적용한다. PinVi #801 이후 Resend 401·403은 맞은 메일 1통만 바로 failed로 닫고
+    프로세스 단위로 900초 발송을 멈춘다(정지가 풀릴 때마다 1통씩 더 failed). 나머지는 pending으로 남아 설정을 고친 재생성 뒤 그대로
+    나가고, failed로 닫힌 메일은 관리자 재발송 대상이다(재발송 때 링크는 현재 origin으로 다시 만들어진다).
+  - compose 재생성은 메일 env만이 아니라 candidate 경로가 보존해 온 실행 중 env와 root `.env`의 차이 **전부**를 함께 적용한다.
+    재생성 전에 실행 중 컨테이너와 렌더 결과(`docker compose config pinvi-api`)의 env 이름 집합과 값 sha256을 비교해 메일 env 밖의
+    차이가 없는지(있으면 그 차이가 의도인지 — 7.5a의 planner 키처럼 다른 서비스와 짝인 값) 확인하고, 이미지가 의도한 PinVi
+    리비전인지(`PINVI_API_IMAGE`) 확인한다.
+- 결박: `backend/tests/test_pinvi_resend_env_wiring.py`(렌더된 compose에서 값 도달·빈 값·web origin 기본값·pinvi-api 외 비수신·
+  key·secret 가림·`.env.example` 빈 자리).
+
 ### 7.6 T-VN-M01 manual Feature 생성 credential
 
 manual Feature 생성은 특정 provider나 PinVi 전용 기능이 아니다. Manager `.env`의
