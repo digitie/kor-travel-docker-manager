@@ -8,7 +8,11 @@
   C6c 정확 allowlist가 옛 이름을 거부한다. `build` 시작 모드도 같은 environment 블록이라 키는 build 입력이 아니고 start 뒤 서버가 읽는다.
 - 시험: 실제 `docker compose config` 렌더에서 UI env `KTC_VWORLD_BROWSER_KEY` = root 값·다른 VWORLD 이름 없음·옛 이름 Compose 거부
   (`test_f1d_compose_contract.py`), 두 시작 모드 projection의 UI env(`test_concierge_activation.py`), raw allowlist(`test_docker_service_config.py`).
-- 배포 순서: 이 Manager를 먼저 설치한다(기존 키 포함 이미지는 그대로 동작) → 키 없이 빌드한 Concierge UI 이미지로 `activate-concierge`.
+- 적대 리뷰 반영: (1) 새 이름이 가림 조각 어디에도 걸리지 않아 inspect env 화면에 원문이 나갈 뻔했다(옛 이름은 `SERVICE_KEY`로
+  가려졌다) — `SENSITIVE_KEY_PARTS`(+frontend 거울)에 `BROWSER_KEY`. (2) root 값 형식을 Concierge 판정과 맞췄다 — 영숫자·`-`·`_`만,
+  `your_..._here` 자리표시자 거부(UI가 "키 없음"으로 볼 값을 재생성 전에 막는다). (3) 문서: 키 교체는 `activate-concierge`로 네 runtime
+  재생성, Manager와 UI 이미지는 짝으로 되돌린다(새 Manager + 옛 이미지 `build` 모드 = 키 없음).
+- 배포 순서: 이 Manager를 먼저 설치한다(운영 `prebuilt`의 기존 키 포함 이미지는 그대로 동작) → 키 없이 빌드한 Concierge UI 이미지로 `activate-concierge`.
 
 ## 2026-11-25 — Transport core 적용 성공 뒤 post-deploy warm 자동 호출
 

@@ -270,6 +270,18 @@ def test_the_planner_key_is_redacted_in_container_inspect_env() -> None:
     )
 
 
+def test_the_concierge_browser_map_key_is_redacted_in_container_inspect_env() -> None:
+    """Concierge UI 지도 키의 새 실행 env 이름(T-212)도 inspect env 화면에서 가린다 — 옛 이름은 `SERVICE_KEY`로 가려졌다."""
+
+    from kor_travel_docker_manager.services.docker_service import _redact_env_pair
+    from kor_travel_docker_manager.services.secret_scrub import is_sensitive_key
+
+    assert is_sensitive_key("KTC_VWORLD_BROWSER_KEY")
+    assert _redact_env_pair("KTC_VWORLD_BROWSER_KEY=planted-browser-key-7c1d") == (
+        f"KTC_VWORLD_BROWSER_KEY={REDACTED}"
+    )
+
+
 # --------------------------------------------------------------------------- G-2 적대 리뷰
 
 

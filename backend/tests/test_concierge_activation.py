@@ -134,7 +134,7 @@ def _canonical_tree(tmp_path: Path) -> tuple[Path, Path]:
         "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET='proxy-$#value-01234567890123456789012345'\n"
         "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS='false'\n"
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS='https://concierge.example.test'\n"
-        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY='vworld-$#legacy-key'\n"
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY='VWORLD-0123-browser_key'\n"
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL=''\n",
         mode=0o600,
     )
@@ -710,3 +710,25 @@ def test_projection_passes_the_browser_map_key_as_a_runtime_env(tmp_path, monkey
             "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY must be explicitly set}"
         )
         assert "NEXT_PUBLIC_VWORLD_SERVICE_KEY" not in environment
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "' '", '"vworld key"', "'vworld-$#key'", "'abc/def'", "your_vworld_browser_key_here", "YOUR_KEY_HERE"],
+)
+def test_activation_refuses_a_browser_map_key_the_ui_would_treat_as_missing(tmp_path, value):
+    """Concierge T-212: UI가 "키 없음"으로 볼 값(빈 값·공백·따옴표 안 공백·URL 문자·자리표시자)은 재생성 전에 거부한다 —
+    지도가 조용히 키 없이 뜨는 길(T-211)을 운영 경로에서 막는다. 거부 메시지에는 값이 없다."""
+
+    root, env_path = _canonical_tree(tmp_path)
+    text = env_path.read_text(encoding="utf-8").replace(
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY='VWORLD-0123-browser_key'",
+        f"KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY={value}",
+    )
+    assert f"KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY={value}\n" in text
+    _write(env_path, text, mode=0o600)
+    with pytest.raises(ConciergeActivationError, match="C6c contract") as raised:
+        activate_canonical_concierge(project_root=root, compose_config_runner=_valid_config_runner,
+                                     compose_up_runner=_must_not_run, require_root=False)
+    message = str(raised.value)
+    assert "vworld key" not in message and "abc/def" not in message and "your_" not in message.lower()

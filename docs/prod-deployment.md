@@ -857,9 +857,15 @@ Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제�
   `KOR_TRAVEL_CONCIERGE_API_KEYS` comma-list의 exact member여야 한다. browser에 필요한 지도 키는 전용
   `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`로 분리하고 UI 컨테이너 **실행 env** `KTC_VWORLD_BROWSER_KEY`로
   넘긴다(Concierge T-212, 2026-11-26). UI 서버가 요청 때 읽어 로그인한 관리자 화면에 내려주므로 build 입력이
-  아니다 — 키를 바꾸면 이미지를 다시 빌드하지 않고 `activate-concierge`로 UI만 다시 만든다. 옛 이름
-  `NEXT_PUBLIC_VWORLD_SERVICE_KEY`는 `next build`가 번들에 박는 이름이라 `prebuilt` 이미지에 효과가 없었고(2026-11-18~25
-  지도 "키 없음"), C6c 정확 allowlist가 이제 그 이름을 거부한다.
+  아니다. 키 교체는 root `.env` 값을 바꾼 뒤 `activate-concierge`로 Concierge 네 runtime을 다시 만드는 것이다(재빌드
+  불필요, 재생성 범위는 아래대로 넷 전체 — `docker restart`로는 새 env가 들어가지 않는다. `build` 모드는 시작 때
+  `next build`를 다시 하므로 느리다). 값은 영숫자·`-`·`_`만 받고 `your_..._here` 자리표시자는 거부한다 — Concierge가
+  "키 없음"으로 볼 값을 재생성 전에 막는다. 옛 이름 `NEXT_PUBLIC_VWORLD_SERVICE_KEY`는 `next build`가 번들에 박는
+  이름이라 `prebuilt` 이미지에 효과가 없었고(2026-11-18~25 지도 "키 없음"), C6c 정확 allowlist가 이제 그 이름을 거부한다.
+  **Manager와 Concierge UI 이미지는 짝으로 움직인다**: 이 Manager(새 이름)에 T-212 이전 UI 이미지를 `prebuilt`로 쓰면
+  build 때 박힌 키로 동작하지만, `build` 모드로 쓰면 컨테이너 안 재빌드가 옛 이름을 찾아 지도가 "키 없음"이 된다. 반대로
+  옛 Manager에 T-212 이후 이미지를 쓰면 두 모드 모두 "키 없음"이다. 되돌릴 때는 둘을 함께 되돌린다(또는 Manager는 두고
+  옛 이미지를 `prebuilt`로만).
 - API의 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
   `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`도 root authority다. 둘 중 하나가 local/false이면 C6c 검증이
   API가 unauthenticated default로 내려가는 것을 막기 위해 재생성 전에 중단한다.
