@@ -1,3 +1,8 @@
+## 2026-11-26 — Concierge UI 지도 키를 실행 env 이름으로 (Concierge T-212)
+
+- [x] UI 컨테이너 env `NEXT_PUBLIC_VWORLD_SERVICE_KEY` → `KTC_VWORLD_BROWSER_KEY`(원천 root `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY` 그대로), C6c 정확 allowlist·projection·실제 `docker compose config` 렌더 시험.
+- [ ] **n150 적용(부모)**: Manager 설치 → 키 없이 빌드한 Concierge UI 이미지로 `activate-concierge` → 지도 `vworld` 상태·live UI e2e.
+
 ## 2026-11-25 — PinVi 메일(Resend) env 배선
 
 - [x] compose: `PINVI_RESEND_FROM_EMAIL`·`PINVI_RESEND_WEBHOOK_SECRET`·`PINVI_WEB_BASE_URL`(pinvi-api만), `.env.example` 네 빈 자리.

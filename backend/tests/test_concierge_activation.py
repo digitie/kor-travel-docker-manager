@@ -678,3 +678,35 @@ def test_prebuilt_requires_immutable_root_selector(tmp_path, monkeypatch):
     with pytest.raises(ConciergeActivationError, match="immutable sha256"):
         activate_canonical_concierge(project_root=root, compose_config_runner=_prebuilt_config,
                                      compose_up_runner=_must_not_run, require_root=False)
+
+
+@pytest.mark.parametrize("prebuilt", [False, True])
+def test_projection_passes_the_browser_map_key_as_a_runtime_env(tmp_path, monkeypatch, prebuilt):
+    """Concierge T-212: 두 시작 모드 모두 projection의 UI env에 실행 시 지도 키 이름 `KTC_VWORLD_BROWSER_KEY`가
+    root `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`에서 실린다 — 옛 build 입력 이름(`NEXT_PUBLIC_*`)은 없다."""
+
+    root = _prebuilt_tree(tmp_path) if prebuilt else _canonical_tree(tmp_path)[0]
+    monkeypatch.setattr(
+        c6c_module,
+        "_run_docker_query",
+        lambda command, **kwargs: activation_module.subprocess.CompletedProcess(
+            command, 0, json.dumps(_normal_ui_metadata())
+        ),
+    )
+    seen = []
+
+    def config(command, project_root, values):
+        projected = yaml.safe_load(Path(command[command.index("--file") + 1]).read_text())
+        seen.append(projected["services"]["kor-travel-concierge-ui"]["environment"])
+        runner = _prebuilt_config if prebuilt else _valid_config_runner
+        return runner(command, project_root, values)
+
+    activate_canonical_concierge(project_root=root, compose_config_runner=config,
+                                 compose_up_runner=_no_op_up_runner, require_root=False)
+    assert seen
+    for environment in seen:
+        assert environment["KTC_VWORLD_BROWSER_KEY"] == (
+            "${KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY:?"
+            "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY must be explicitly set}"
+        )
+        assert "NEXT_PUBLIC_VWORLD_SERVICE_KEY" not in environment

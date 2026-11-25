@@ -1,3 +1,15 @@
+## 2026-11-26 — Concierge UI 지도 키를 실행 env 이름으로 (Concierge T-212)
+
+- 출처: Concierge가 브라우저 지도 VWorld 키를 build arg 대신 UI 서버 실행 env `KTC_VWORLD_BROWSER_KEY`에서 읽게 바뀌었다
+  (Concierge PR #290). 옛 이름 `NEXT_PUBLIC_VWORLD_SERVICE_KEY`는 `next build`가 번들에 박는 이름이라, Manager가 실행 env로
+  넘겨도 운영 `prebuilt` 이미지에는 효과가 없었다(2026-11-18~25 지도 "키 없음").
+- 변경: `docker-compose.yml` UI environment와 C6c `_CONCIERGE_UI_VWORLD_KEY_ENV`의 대상 이름만 바꿨다. 원천 root 이름
+  `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`와 그 형식 검사(비어 있지 않음·CR/LF 없음)는 그대로라 root `.env`는 바꾸지 않는다.
+  C6c 정확 allowlist가 옛 이름을 거부한다. `build` 시작 모드도 같은 environment 블록이라 키는 build 입력이 아니고 start 뒤 서버가 읽는다.
+- 시험: 실제 `docker compose config` 렌더에서 UI env `KTC_VWORLD_BROWSER_KEY` = root 값·다른 VWORLD 이름 없음·옛 이름 Compose 거부
+  (`test_f1d_compose_contract.py`), 두 시작 모드 projection의 UI env(`test_concierge_activation.py`), raw allowlist(`test_docker_service_config.py`).
+- 배포 순서: 이 Manager를 먼저 설치한다(기존 키 포함 이미지는 그대로 동작) → 키 없이 빌드한 Concierge UI 이미지로 `activate-concierge`.
+
 ## 2026-11-25 — Transport core 적용 성공 뒤 post-deploy warm 자동 호출
 
 - 출처: Transport `scripts/post-deploy-warm.sh`(ADR-016 본문 준비·loopback export smoke)를 운영자가 배포 뒤 손으로 불렀다. Transport
