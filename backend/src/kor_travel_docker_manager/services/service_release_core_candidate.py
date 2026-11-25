@@ -12,9 +12,11 @@ import inspect
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from copy import deepcopy
@@ -48,6 +50,7 @@ from kor_travel_docker_manager.services.registry import (
     transport_core_candidate_for_target,
 )
 from kor_travel_docker_manager.services.runtime_topology import listen_address
+from kor_travel_docker_manager.services.secret_scrub import redact_secret_text
 from kor_travel_docker_manager.services.service_release import ServiceReleaseError
 
 RUNTIME = {"backend", "frontend", "dagster-code-server"}
@@ -1169,3 +1172,178 @@ def _apply(
             else "core 후보 단계가 실패했습니다. current는 발행하지 않았습니다",
         )
     return result
+
+
+# ---- 배포 직후 best-effort warm (Transport scripts/post-deploy-warm.sh) ----
+# Transport가 소유한 스크립트다. 인수 오류(exit 2)를 빼면 항상 exit 0이고 문제는 stderr
+# `post-deploy-warm: WARN ...` 줄로만 남긴다. Manager는 그 결과를 기록만 하고 배포 성패·current를
+# 바꾸지 않는다. 스크립트 내부 상한(준비 180+70초, smoke 20*8+70초, /health 5초)보다 넉넉한 바깥 안전망이다.
+WARM_SCRIPT = "scripts/post-deploy-warm.sh"
+WARM_TIMEOUT_SECONDS = 600
+_WARN_PREFIX = "post-deploy-warm: WARN "
+_WARM_OUTPUT_LIMIT = 64 * 1024
+_WARM_DETAIL_LIMIT = 4000
+
+
+class _WarmInterrupted(Exception):
+    pass
+
+
+def _transport_backend_api_port(config: dict, project: str) -> int:
+    """target의 backend `expected_ports`(호스트 포트)에서 유도한다. 두 번 선언하지 않는다."""
+    ports = [
+        spec.get("expected_ports")
+        for spec in config.get("containers", {}).values()
+        if isinstance(spec, dict)
+        and spec.get("external_project") == project
+        and spec.get("compose_service") == "backend"
+    ]
+    if len(ports) != 1 or not isinstance(ports[0], list) or len(ports[0]) != 1:
+        raise ServiceReleaseError("Transport backend의 단일 expected_ports 선언이 필요합니다")
+    parts = str(ports[0][0]).split(":")  # HOST:CONTAINER 또는 IP:HOST:CONTAINER
+    host_port = parts[-2] if len(parts) >= 2 else ""
+    if not host_port.isdigit() or not 1 <= int(host_port) <= 65535:
+        raise ServiceReleaseError("Transport backend 호스트 포트가 올바르지 않습니다")
+    return int(host_port)
+
+
+def _warm_secrets(root: Path) -> list[tuple[str, str | None]] | None:
+    """가릴 값. env 파일이 없거나 읽지 못하면 None — 호출자는 본문을 내지 않는다(fail-closed)."""
+    try:
+        manifest = release.read_current_release("transport", root=root)
+        for group in manifest["groups"].values():
+            if group.get("env_file") and not Path(group["env_file"]).is_file():
+                return None
+        return frozen._secrets({"transport": manifest})
+    except Exception:
+        return None
+
+
+def _kill_session(sid: int) -> None:
+    """새 session의 모든 프로세스를 죽인다. GNU timeout은 자기 process group을 따로 만들어 killpg로는 남는다."""
+    for _ in range(3):
+        found = False
+        for proc in Path("/proc").iterdir():
+            if not proc.name.isdigit():
+                continue
+            try:
+                fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+                if int(fields[3]) != sid:  # state ppid pgrp session
+                    continue
+                os.kill(int(proc.name), signal.SIGKILL)
+                found = True
+            except (OSError, IndexError, ValueError):
+                continue
+        if not found:
+            return
+        time.sleep(0.1)
+
+
+def post_deploy_warm(
+    *,
+    source_clone: Path,
+    source_sha: str,
+    root: Path,
+    config: dict,
+    timeout: int = WARM_TIMEOUT_SECONDS,
+) -> dict:
+    """성공한 core 적용 뒤(G·project lease를 푼 다음) 승인 M의 warm 스크립트를 한 번 부른다.
+
+    스크립트 본문은 작업 트리가 아니라 승인 SHA의 Git blob에서 읽는다(적용 뒤 clone이 바뀌어도 같은 본문).
+    어떤 결과도 예외로 올리지 않는다 — 배포는 이미 발행됐고 warm은 best-effort다. warm 동안
+    SIGINT·SIGTERM·SIGHUP은 `interrupted`로 바꿔 배포 결과 출력이 사라지지 않게 한다.
+    """
+    started = time.monotonic()
+    result: dict[str, Any] = {"script": WARM_SCRIPT, "source_sha": source_sha}
+
+    def interrupt(signum, frame):
+        raise _WarmInterrupted
+
+    previous = {}
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            previous[signum] = signal.signal(signum, interrupt)
+    except ValueError:  # 주 스레드가 아니면 신호 처리를 바꾸지 않는다.
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        previous = {}
+    failed = {**result, "warning_count": 0, "warnings": [], "clean": False}
+    try:
+        return _post_deploy_warm(source_clone, source_sha, config, timeout, started, result, root)
+    except _WarmInterrupted:
+        return {**failed, "status": "interrupted",
+                "message": "warm이 신호로 중단됐습니다(배포 결과와 무관)"}
+    except Exception as exc:
+        return {**failed, "status": "error", "error_type": type(exc).__name__,
+                "message": "warm 단계가 예외로 끝났습니다(배포 결과와 무관)"}
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _post_deploy_warm(source_clone, source_sha, config, timeout, started, result, root) -> dict:
+    skipped = {**result, "warning_count": 0, "warnings": [], "clean": False}
+    try:
+        project = config["targets"]["transport"]["external_project"]["project"]
+        port = _transport_backend_api_port(config, project)
+        result.update(project=project, api_port=port)
+        if not _git(source_clone, "ls-tree", "--name-only", source_sha, WARM_SCRIPT).strip():
+            return {**skipped, **result, "status": "unavailable",
+                    "message": "승인 source에 warm 스크립트가 없어 건너뛰었습니다"}
+        body = _git(source_clone, "show", f"{source_sha}:{WARM_SCRIPT}")
+    except (ServiceReleaseError, KeyError, TypeError, ValueError, OSError, subprocess.TimeoutExpired):
+        return {**skipped, **result, "status": "error",
+                "message": "warm 스크립트 또는 좌표를 확인하지 못해 건너뛰었습니다"}
+    # 스크립트는 127.0.0.1의 API를 부르므로 Docker도 이 호스트의 로컬 daemon이어야 한다.
+    # 부모 환경(DOCKER_CONTEXT·원격 DOCKER_HOST·앱 secret)을 넘기지 않는다.
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/nonexistent",
+        "LANG": "C.UTF-8",
+        "DOCKER_HOST": persistent.LOCAL_DOCKER_HOST,
+    }
+    argv = ["/bin/bash", "-c", body, WARM_SCRIPT, "--project", project, "--api-port", str(port)]
+    # 출력은 pipe가 아니라 임시 파일로 받는다 — 남은 손자 프로세스가 pipe를 잡아도 기다리지 않는다.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(
+            argv, cwd="/", env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+            start_new_session=True,
+        )
+        status = None
+        try:
+            code = process.wait(timeout=timeout)
+        except (subprocess.TimeoutExpired, _WarmInterrupted) as exc:
+            status = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "interrupted"
+            _kill_session(process.pid)
+            code = process.wait()
+        outputs = []
+        for handle in (out, err):
+            handle.seek(0)
+            raw = handle.read(_WARM_OUTPUT_LIMIT + 1)
+            if len(raw) > _WARM_OUTPUT_LIMIT:  # 잘린 마지막 줄은 비밀 일부일 수 있어 버린다.
+                raw = raw[:_WARM_OUTPUT_LIMIT].rsplit(b"\n", 1)[0]
+            outputs.append(raw.decode("utf-8", errors="replace"))
+    raw_out, raw_err = outputs
+    if status is None:
+        status = "completed" if code == 0 else "invalid_arguments" if code == 2 else "failed"
+    warning_count = sum(line.startswith(_WARN_PREFIX) for line in raw_err.splitlines())
+    payload = {
+        **result,
+        "status": status,
+        "exit_code": code,
+        "elapsed_seconds": round(time.monotonic() - started, 1),
+        "warning_count": warning_count,
+        "clean": status == "completed" and warning_count == 0,
+    }
+    secrets = _warm_secrets(root)
+    if secrets is None:
+        # 개수만 남긴다(내용 없음). 가릴 값을 모르면 본문을 내지 않는다.
+        return {**payload, "warnings": [], "output_withheld": True, "stdout": None, "stderr": None}
+    stdout, stderr = (redact_secret_text(text, secrets) for text in (raw_out, raw_err))
+    return {
+        **payload,
+        "warnings": [line[:1000] for line in stderr.splitlines() if line.startswith(_WARN_PREFIX)],
+        "output_withheld": False,
+        "stdout": stdout[-_WARM_DETAIL_LIMIT:],
+        "stderr": stderr[-_WARM_DETAIL_LIMIT:],
+    }

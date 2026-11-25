@@ -372,6 +372,35 @@ public metadata나 Git에 넣지 않는다.
 두 소스 리뷰·정확 CI·병합·trusted SDK 설치 및 최종 이미지 tuple gate 이후다.
 
 
+### Transport 배포 직후 best-effort warm
+
+`apply-core-candidate transport --confirm`이 `success: true`(current 발행)로 끝나면 CLI가 G와 project lease를 **푼 뒤**
+Transport 소유 `scripts/post-deploy-warm.sh`를 한 번 부르고 결과를 출력 JSON의 `post_deploy_warm`에 남긴다
+(Transport `docs/runbooks/deployment.md` "배포 직후 best-effort warm"). dry-run·실패·중단 결과에서는 부르지 않는다.
+Transport에는 자동 rollback이 없으므로 rollback 뒤 warm도 없다.
+
+- 본문은 작업 트리가 아니라 승인 `--source-sha`의 Git blob(`git show <M>:scripts/post-deploy-warm.sh`)을 `bash -c`로
+  실행한다. 그 SHA에 스크립트가 없으면(옛 Transport) `status: unavailable`로 건너뛴다.
+- 인수는 `--project`(target `external_project.project`)와 `--api-port`(같은 project의 backend `expected_ports` 호스트 포트)에서
+  유도하며 따로 선언하지 않는다. 스크립트가 `127.0.0.1`의 API를 부르므로 Docker도 `DOCKER_HOST=unix:///var/run/docker.sock`
+  으로 고정하고, 부모 환경(원격 `DOCKER_HOST`·`DOCKER_CONTEXT`·앱 secret)은 넘기지 않는다.
+- 바깥 상한은 600초(스크립트 내부 상한 합 약 490초보다 넉넉)다. 넘거나 warm 동안 SIGINT·SIGTERM·SIGHUP을 받으면 warm
+  session의 모든 프로세스(GNU `timeout`이 따로 만든 process group 포함)를 SIGKILL하고 `timeout`/`interrupted`로 기록한 뒤
+  배포 JSON은 그대로 출력한다. 컨테이너 안 프로세스(`docker exec`가 띄운 쪽)는 스크립트 설명대로 자기 상한까지 남을 수 있다.
+- `status`(`completed`·`invalid_arguments`(exit 2)·`failed`·`timeout`·`interrupted`·`unavailable`·`error`), `exit_code`,
+  `warning_count`, `warnings`(`post-deploy-warm: WARN ...` 줄), 가린 stdout/stderr(각 끝 4000자), `clean`을 남긴다. 스크립트는
+  거의 항상 exit 0이므로 판정은 `status`가 아니라 **`clean`**(완료이고 WARN 0개)으로 한다. 시작 전 stderr에 한 줄을 내고, 끝나면
+  WARN 줄과 `post-deploy-warm: <status> clean=<bool> warnings=<n>` 요약을 stderr에 낸다. 출력은 Transport env 파일 값으로
+  가리며, env 파일이 없거나 읽지 못하면 본문(`stdout`/`stderr`는 `null`, `output_withheld: true`) 없이 개수만 남긴다.
+- **warm 결과는 CLI exit code·current·배포 성패를 바꾸지 않는다.** warm 안의 예외도 `status: error`로 기록할 뿐이다.
+- G·project lease를 푼 뒤에 돌므로 그 사이 다른 배포·복원·정리가 컨테이너를 바꿀 수 있다. 그때 warm은 WARN만 남긴다.
+- 신뢰 경계: 승인 merged SHA의 스크립트를 root로 호스트에서 실행한다. 운영자가 같은 clone에서 손으로 실행하던 것과 같은
+  경계이며, 승인 SHA는 적용 단계가 canonical URL·merged 여부를 이미 검사한다. 별도 격리는 두지 않는다.
+- 시점: Manager 경로는 Transport 스케줄·센서 복원을 운영자가 CLI 뒤에 하므로, warm은 instigator가 아직 STOPPED인 동안 돈다
+  (Transport 런북은 "복원 뒤"를 권한다 — Transport 쪽 런북 갱신은 후속). 본문이 재사용(`reused`)되면 수 초지만 최악에는
+  수 분 수집 공백이 늘 수 있다. 공백을 피해야 하는 창이면 `--skip-post-deploy-warm`(transport 전용, 다른 서비스는 거절)으로
+  끄고, instigator 복원 뒤 Transport 런북대로 승인 clone에서 수동 실행한다.
+
 ### Transport Dagster 영속 state volume
 
 영속 경로에서는 같은 CLI와 normal build receipt v1을 사용한다. runtime receipt의
@@ -438,7 +467,8 @@ bind 별칭은 실패한다. 공유 Dagster 설정 bind와 collector checkpoint 
    생성할 수 있다. `state_handoff=verified_seed`가 이 경로를 표시한다.
 4. 생성된 CID의 정확한 mount와 같은 volume/세대를 시작 전에 확인한다. 시작 뒤에는
    새 CID 내부에서 읽은 파일시스템 identity, schema, health, drain, 기존 current 발행
-   조건을 재확인한다. 기존 운영 절차대로 원래 실행 상태였던 instigator를 복원한다.
+   조건을 재확인한다. CLI는 발행 뒤 best-effort warm(위 절, 최대 600초)까지 마치고 끝난다.
+   기존 운영 절차대로 원래 실행 상태였던 instigator를 복원한다.
 
 전환 전 증거가 없거나 어긋나면 이전 CS를 교체하기 전에 실패한다. 전환에 실패하면 기존
 current와 준비한 volume을 유지한다. 이미 이전 CS를 교체한 뒤라면 private archive와

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -183,6 +184,8 @@ def _run(args: argparse.Namespace) -> int:
         declaration = _declaration(args.service, config)
         root = Path(args.root)
         if args.release_action == 'apply-core-candidate':
+            if args.skip_post_deploy_warm and args.service != 'transport':
+                raise ServiceReleaseError('--skip-post-deploy-warm은 transport에만 쓸 수 있습니다')
             from kor_travel_docker_manager.services.service_release_core_candidate import (
                 apply_transport_core_candidate,
             )
@@ -209,6 +212,29 @@ def _run(args: argparse.Namespace) -> int:
                 receipt_sha256=args.sha256, build_receipt_path=Path(args.build_receipt),
                 build_receipt_sha256=args.build_sha256, execute=args.confirm,
             )
+            if args.service == 'transport' and args.confirm and payload.get('success') is True:
+                # G·project lease를 푼 뒤의 best-effort warm이다. 결과는 기록만 하고 exit code·current를 바꾸지 않는다.
+                if args.skip_post_deploy_warm:
+                    payload['post_deploy_warm'] = {'status': 'skipped', 'reason': 'operator'}
+                else:
+                    print('post-deploy-warm: Transport core published; running best-effort warm '
+                          '(<=600s; it never changes the deploy result, Ctrl-C stops only the warm)',
+                          file=sys.stderr, flush=True)
+                    try:
+                        from kor_travel_docker_manager.services.service_release_core_candidate import (
+                            post_deploy_warm,
+                        )
+                        warm = post_deploy_warm(
+                            source_clone=Path(args.source_clone), source_sha=args.source_sha,
+                            root=root, config=config,
+                        )
+                    except BaseException as exc:  # noqa: BLE001 - 발행된 배포 결과를 잃지 않는다.
+                        warm = {'status': 'error', 'error_type': type(exc).__name__, 'clean': False}
+                    payload['post_deploy_warm'] = warm
+                    for line in warm.get('warnings', []):
+                        print(line, file=sys.stderr)
+                    print(f"post-deploy-warm: {warm.get('status')} clean={warm.get('clean')} "
+                          f"warnings={warm.get('warning_count', 0)}", file=sys.stderr, flush=True)
         elif args.release_action == 'apply-candidate':
             from kor_travel_docker_manager.services.service_release_candidate import (
                 apply_ui_candidate,
@@ -300,6 +326,8 @@ def add_service_release_parser(subparsers: Any) -> None:
             child.add_argument('--build-sha256', required=True)
             child.add_argument('--receipt', required=True)
             child.add_argument('--sha256', required=True)
+            child.add_argument('--skip-post-deploy-warm', action='store_true',
+                               help='Transport 성공 적용 뒤 자동 warm(scripts/post-deploy-warm.sh)을 건너뜁니다.')
             approval = child.add_mutually_exclusive_group(required=True)
             approval.add_argument('--confirm', action='store_true')
             approval.add_argument('--dry-run', action='store_true')
