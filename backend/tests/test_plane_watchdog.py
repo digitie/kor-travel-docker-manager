@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 import pytest
+import yaml
 
 from kor_travel_docker_manager.services import plane_watchdog as wd
 from kor_travel_docker_manager.services import plane_watchdog_diagnostics as diag
@@ -420,6 +421,15 @@ def test_storage_query_failure_is_a_probe_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _role(connections: int, limit: int = 60, client: int | None = None) -> pr.RoleConnections:
+    """n150·odroid 공용 instance 모양: max_connections 100, superuser_reserved 3(2026-11-25 실측)."""
+
+    return pr.RoleConnections(
+        role="kor_travel_dagster_shared_app", connections=connections, limit=limit,
+        client_connections=client if client is not None else connections + 23,
+        max_connections=100, reserved_connections=3)
+
+
 class FakeProbes:
     def __init__(self) -> None:
         self.now = 0.0
@@ -431,9 +441,19 @@ class FakeProbes:
         self.tagged_source = lambda now: []
         self.tagged_error: str | None = None
         self.tagged_calls: list[tuple[str, str, str, float, int]] = []
+        # 공용 Dagster role 연결 수(기본: n150 2026-11-25 실측 13/45 — 평소 값).
+        self.role_connections_value: list[int] = []
+        self.role_limit = 45
+        self.role_error: str | None = None
 
     def host(self) -> str:
         return "test-host"
+
+    def role_connections(self):
+        if self.role_error:
+            raise pr.ProbeError(self.role_error)
+        connections = self.role_connections_value.pop(0) if self.role_connections_value else 13
+        return _role(connections, self.role_limit)
 
     def plane_expected(self) -> bool:
         return True
@@ -1026,3 +1046,253 @@ def test_escalation_from_warning_to_critical_is_announced_once(config, monkeypat
     events = [(event["event"], event["severity"]) for batch in sent for event in batch["events"]]
     assert events == [("firing", "warning"), ("escalated", "critical"), ("resolved", "critical")]
 
+
+# ---------------------------------------------------------------------------
+# 공용 Dagster role 연결 수(소유자 결정 2026-11-25 — 한도 60, 80% 주의·95% 위험, 연속 조건)
+# ---------------------------------------------------------------------------
+
+
+def test_repository_config_carries_the_role_connection_rule(config):
+    rule = config.rule("dagster_role_connections")
+    assert rule["enabled"] is True
+    assert (rule["warning_ratio"], rule["critical_ratio"]) == (0.8, 0.95)
+    assert rule["for_evaluations"] >= 2  # 연속 조건 — 한 번 튄 값으로 울리지 않는다
+
+
+@pytest.mark.parametrize(("key", "value", "message"), [
+    ("warning_ratio", 0.96, "warning_ratio ≤ critical_ratio"),
+    ("critical_ratio", 1.5, "critical_ratio ≤ 1"),
+    ("warning_ratio", 0, "0 < warning_ratio"),
+    ("for_evaluations", 0, "for_evaluations"),
+])
+def test_role_connection_config_is_validated(key, value, message):
+    document = yaml.safe_load((REPO_ROOT / "config" / "plane-watchdog.yml").read_text(encoding="utf-8"))
+    document["rules"]["dagster_role_connections"][key] = value
+    with pytest.raises(wd.ConfigError, match=message):
+        wd.parse_config(document)
+
+
+def test_role_connections_need_consecutive_samples_and_take_the_lowest_severity(config):
+    rule = config.rule("dagster_role_connections")  # 0.8·0.95·3회
+
+    def judge(*values: int) -> list[wd.Finding]:
+        return wd.evaluate_role_connections([_role(value) for value in values], rule)
+
+    # 한도 60: 48 = 80%, 57 = 95%.
+    assert judge(47, 47, 47) == []
+    assert judge(48, 48) == []  # 아직 두 번
+    assert judge(60, 10, 60) == []  # 중간에 내려갔다 — 연속이 아니다
+    [warning] = judge(48, 50, 52)
+    assert (warning.severity, warning.subject) == ("warning", "kor_travel_dagster_shared_app")
+    assert "52/60(87%)" in warning.title and "최근 3회 평가 연속 80% 이상" in warning.title
+    assert "too many connections for role" in warning.detail and "instance 전체 client 연결 75/97" in warning.detail
+    assert warning.evidence["recent_ratios"] == [0.8, 0.833, 0.867]
+    # 위험은 최근 세 번 모두 95% 이상일 때만 — 한 번 튄 60/60은 주의에 머문다.
+    assert judge(50, 50, 60)[0].severity == "warning"
+    assert judge(57, 58, 60)[0].severity == "critical"
+    # 한도 없음(-1)이면 instance 비-superuser 자리(97)를 분모로 쓴다.
+    [finding] = wd.evaluate_role_connections([_role(93, limit=-1)] * 3, rule)
+    assert finding.severity == "critical" and "93/97" in finding.title and "한도 없음" in finding.detail
+
+
+def _role_check(watchdog: wd.PlaneWatchdog) -> dict[str, Any]:
+    return {check["rule"]: check for check in watchdog.status_payload()["checks"]}["dagster_role_connections"]
+
+
+def _severities(watchdog: wd.PlaneWatchdog) -> list[str]:
+    return [alert["severity"] for alert in watchdog.status_payload()["alerts"]]
+
+
+def _events(sent: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [(event["event"], event["severity"]) for batch in sent for event in batch["events"]]
+
+
+def test_role_connection_alert_fires_escalates_and_resolves_only_after_three_evaluations(config, monkeypatch):
+    probes = FakeProbes()
+    probes.role_limit = 60
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setenv("KTDM_ALERT_WEBHOOK_URL", "https://hooks.invalid/secret-path")
+    watchdog = _watchdog(config, probes, sent)
+    probes.role_connections_value = [50, 52, 55, 57, 58, 59, 20, 20, 20]
+
+    def step() -> dict[str, Any]:
+        probes.now += 120
+        watchdog.evaluate_once()
+        return _role_check(watchdog)
+
+    first = step()
+    assert first["state"] == "ok" and "50/60(83%)" in first["detail"] and "주의선 넘음 1/3회 연속" in first["detail"]
+    assert "instance 73/97" in first["detail"]
+    assert step()["state"] == "ok"
+    assert step()["state"] == "firing"  # 세 번째 연속 관측에서 주의
+    assert _severities(watchdog) == ["warning"]
+    step()
+    step()  # 57·58 — 최근 셋(55·57·58) 중 가장 낮은 55는 아직 95% 밑
+    assert _severities(watchdog) == ["warning"]
+    step()  # 57·58·59 → 위험
+    assert _severities(watchdog) == ["critical"]
+    # 해소에도 같은 연속 조건 — 주의선 밑 한두 번으로는 풀리지 않는다.
+    held = step()
+    assert held["state"] == "firing" and "해소 대기(주의선 밑 1/3회 연속)" in held["detail"]
+    assert _severities(watchdog) == ["critical"]
+    step()
+    resolved = step()
+    assert resolved["state"] == "ok" and _severities(watchdog) == []
+    assert _events(sent) == [("firing", "warning"), ("escalated", "critical"), ("resolved", "critical")]
+
+
+def test_role_connection_alert_does_not_flap_around_the_warning_line(config, monkeypatch):
+    probes = FakeProbes()
+    probes.role_limit = 60
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setenv("KTDM_ALERT_WEBHOOK_URL", "https://hooks.invalid/secret-path")
+    watchdog = _watchdog(config, probes, sent)
+    probes.role_connections_value = [50, 50, 50, 45, 50, 45, 50, 45]  # 50 = 83%, 45 = 75%
+    for _ in range(8):
+        probes.now += 120
+        watchdog.evaluate_once()
+    assert _severities(watchdog) == ["warning"]
+    assert _events(sent) == [("firing", "warning")]
+
+
+def test_role_connection_probe_failure_or_restart_does_not_resolve_a_high_alert(config, monkeypatch):
+    """측정 실패 뒤 다시 모으는 동안·Manager 재시작 직후 높은 값이 "정상"으로 읽혀 해소가 나가지 않는다(적대 리뷰 H1)."""
+
+    probes = FakeProbes()
+    probes.role_limit = 60
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setenv("KTDM_ALERT_WEBHOOK_URL", "https://hooks.invalid/secret-path")
+    watchdog = _watchdog(config, probes, sent)
+    probes.role_connections_value = [58, 58, 58]
+    for _ in range(3):
+        probes.now += 120
+        watchdog.evaluate_once()
+    assert _severities(watchdog) == ["critical"]
+
+    probes.role_error = "storage 질의 실패(exit 2): connection refused"
+    probes.now += 120
+    watchdog.evaluate_once()
+    assert _role_check(watchdog)["state"] == "unavailable"
+    assert _severities(watchdog) == ["critical"]  # 측정 실패로 풀리지 않는다
+
+    # 돌아온 높은 관측 둘 — 연속은 처음부터 다시 세지만 경보는 그대로다(판정 대기).
+    probes.role_error = None
+    probes.role_connections_value = [58, 58, 58]
+    for expected in (1, 2):
+        probes.now += 120
+        watchdog.evaluate_once()
+        check = _role_check(watchdog)
+        assert check["state"] == "firing" and f"판정 대기(관측 {expected}/3회)" in check["detail"]
+        assert _severities(watchdog) == ["critical"]
+    probes.now += 120
+    watchdog.evaluate_once()
+    assert _severities(watchdog) == ["critical"]
+    assert _events(sent) == [("firing", "critical")]  # 해소·재발화가 없다
+
+    # storage 질의가 실패한 평가에서는 같은 PG에 role 질의를 더 얹지 않는다.
+    calls: list[int] = []
+    original = probes.role_connections
+    probes.role_connections = lambda: calls.append(1) or original()  # type: ignore[method-assign]
+    probes.storage_error = "storage 질의 실패(exit 2): connection refused"
+    probes.now += 120
+    watchdog.evaluate_once()
+    assert calls == [] and "storage에 닿지 못해" in _role_check(watchdog)["detail"]
+
+    # 재시작(새 감시자) 직후 높은 값 — 첫 관측들은 "관측"이 아니므로 해소를 보내지 않는다.
+    restarted_sent: list[dict[str, Any]] = []
+    fresh = FakeProbes()
+    fresh.role_limit = 60
+    fresh.role_connections_value = [58, 58]
+    restarted = _watchdog(config, fresh, restarted_sent)
+    for _ in range(2):
+        fresh.now += 120
+        restarted.evaluate_once()
+    assert _events(restarted_sent) == []
+    assert "주의선 넘음 2/3회 연속" in _role_check(restarted)["detail"]
+
+
+def test_a_zero_role_limit_is_critical_at_once(config):
+    rule = config.rule("dagster_role_connections")
+    [finding] = wd.evaluate_role_connections([_role(0, limit=0)], rule)
+    assert finding.severity == "critical" and "새 접속이 모두 거절" in finding.title
+    probes = FakeProbes()
+    probes.role_limit = 0
+    watchdog = _watchdog(config, probes)
+    watchdog.evaluate_once()
+    assert _severities(watchdog) == ["critical"]
+    assert "ktdm_dagster_role_connection_ratio" not in watchdog.render_prometheus_metrics()
+
+
+def test_role_connections_are_not_applicable_without_a_plane_and_forget_old_samples(config):
+    probes = FakeProbes()
+    watchdog = _watchdog(config, probes)
+    watchdog.evaluate_once()
+    assert "ktdm_dagster_role_connections" in watchdog.render_prometheus_metrics()
+    probes.plane_expected = lambda: False  # type: ignore[method-assign]
+    watchdog.evaluate_once()
+    assert _role_check(watchdog)["state"] == "not_applicable"
+    assert "ktdm_dagster_role_connections" not in watchdog.render_prometheus_metrics()
+    assert len(watchdog._role_samples) == 0
+
+
+def test_a_disabled_role_connection_rule_does_not_query(config):
+    document = yaml.safe_load((REPO_ROOT / "config" / "plane-watchdog.yml").read_text(encoding="utf-8"))
+    document["rules"]["dagster_role_connections"]["enabled"] = False
+    probes = FakeProbes()
+    probes.role_error = "불리면 안 된다"
+    watchdog = _watchdog(wd.parse_config(document), probes)
+    watchdog.evaluate_once()
+    assert _role_check(watchdog)["state"] == "disabled"
+
+
+def test_prometheus_metrics_expose_the_role_connections(config):
+    probes = FakeProbes()
+    probes.role_connections_value = [13]
+    watchdog = _watchdog(config, probes)
+    watchdog.evaluate_once()
+    text = watchdog.render_prometheus_metrics()
+    assert 'ktdm_dagster_role_connections{role="kor_travel_dagster_shared_app"} 13' in text
+    assert 'ktdm_dagster_role_connection_limit{role="kor_travel_dagster_shared_app"} 45' in text
+    assert 'ktdm_dagster_role_connection_ratio{role="kor_travel_dagster_shared_app"} 0.2889' in text
+    assert "ktdm_shared_postgres_client_connections 36" in text
+    assert "ktdm_shared_postgres_connection_capacity 97" in text
+    # 측정이 실패하면 옛 값을 내지 않는다.
+    probes.role_error = "storage 질의 실패"
+    watchdog.evaluate_once()
+    assert "ktdm_dagster_role_connections" not in watchdog.render_prometheus_metrics()
+
+
+_ROLE_ROW = {"role": "kor_travel_dagster_shared_app", "superuser": False, "limit": 45, "connections": 13,
+             "max_connections": 100, "client_connections": 26, "reserved_connections": 3}
+
+
+def test_role_connection_query_is_read_only_and_derives_the_role_from_the_storage_owner(monkeypatch):
+    monkeypatch.setattr(pr.standalone_backup, "_discover_admin_role", lambda container: "shared_admin")
+    monkeypatch.setattr(pr.standalone_backup, "_discover_port", lambda container: 11000)
+    seen: dict[str, Any] = {}
+    replies = iter([
+        json.dumps(_ROLE_ROW),
+        json.dumps({**_ROLE_ROW, "limit": "45"}),  # 숫자가 아닌 한도
+        json.dumps({**_ROLE_ROW, "superuser": True}),  # owner가 superuser(복원·수동 변경)
+        json.dumps([_ROLE_ROW]),
+    ])
+
+    def runner(argv, **kwargs):
+        seen["argv"], seen["input"] = argv, kwargs["input"]
+        return subprocess.CompletedProcess(argv, 0, next(replies) + "\n", "")
+
+    client = pr.StorageClient(statement_timeout_seconds=7, runner=runner)
+    sample = client.role_connections()
+    assert (sample.connections, sample.limit, sample.capacity, sample.effective_limit) == (13, 45, 97, 45)
+    assert seen["input"].startswith("BEGIN READ ONLY;")
+    # role 이름을 설정에 다시 적지 않는다 — storage DB의 owner에서 유도하고(OID로 맞춤), 한도가 세는 client 연결만 센다.
+    assert "r.oid = d.datdba" in seen["input"] and "current_database()" in seen["input"]
+    assert "a.usesysid = r.oid" in seen["input"]
+    assert "backend_type = 'client backend'" in seen["input"]
+    assert "kor_travel_dagster_shared_app" not in seen["input"]
+    with pytest.raises(pr.ProbeError, match="모양"):
+        client.role_connections()
+    with pytest.raises(pr.ProbeError, match="superuser"):
+        client.role_connections()
+    with pytest.raises(pr.ProbeError, match="객체가 아닙니다"):
+        client.role_connections()

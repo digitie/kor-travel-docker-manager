@@ -1,3 +1,25 @@
+## 2026-11-25 — 공용 Dagster role 연결 한도 45 → 60(설정 키)·연결 수 경보(ADR-68)
+
+- 소유자 결정: pool은 dev2 기본(24) 그대로, role `kor_travel_dagster_shared_app` 한도를 60으로. db-init의 리터럴 45 두 문장을
+  root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`(기본 60, 두 plane 공통)으로 바꾸고, 양의 정수가 아니면 기다리기 전에,
+  instance 비-superuser 자리 이상이면 role을 바꾸기 전에 멈춘다. 창 스크립트는 그 env 렌더 값을 읽는다.
+- 두 호스트 읽기 전용 실측(PG 18.6, `max_connections` 100, superuser_reserved 3 → 자리 97): n150 client 36(이 role 13, Map
+  `ktm_feature_service` 17, PinVi 3, Concierge 2), 유한 한도는 이 role과 Map DB `datconnlimit` 55 — 합 115 > 97(옛 45로도 100)이라
+  칸막이이지 예약이 아니라는 경고를 문서화. odroid client 30(이 role 9, weather 8·geo 7·transport 4), 유한 한도는 이 role 하나.
+  odroid host compose(`/opt/kor-travel-odroid/compose.yml`)의 db-init에도 리터럴 45가 있다 — Codex 몫.
+- 수집 경보 규칙 `dagster_role_connections`: storage DB owner role의 client 연결 수 / `rolconnlimit`(-1이면 자리)이 최근 3회 평가 연속
+  80%·95% 이상이면 주의·위험(심각도는 최근 관측의 최저 비율), 해소도 3회 연속 80% 밑, 측정 실패면 확인 불가·경보 유지·연속 재시작
+  (다시 모으는 동안·재시작 직후 해소 없음), storage 실패 평가에서는 묻지 않음, 한도 0은 즉시 위험. `/metrics` 5종. 질의 실측 n150
+  345 ms·odroid 136 ms.
+- 적대 리뷰 2인(둘 다 조건부 승인) 반영: 측정 실패 뒤 첫 관측이 거짓 해소를 내고 재발화한 위험이 Telegram 360분 억제에 묶이던 것(재현)
+  → 해소에도 연속 조건, 판정 전에는 관측으로 넘기지 않음; owner superuser 거부·OID 매칭·지표는 마지막 관측 한 필드; 적용 절차에
+  비밀번호 일치 사전 확인(db-init이 비밀번호를 `.env` 값으로 다시 건다)·`flock -E 75`·lock 파일 모드 확인, 문서 수치·odroid 무효 문구 정정.
+- n150 적용 경로: `ensure dagster`는 production 거부, plane 수렴은 db-init을 돌리지 않는다 → 설치 뒤 db-init one-shot을 lock G 아래서
+  직접(무중단 — `ALTER ROLE`은 새 접속에만 걸린다). 명령·확인 질의는 [daemon-pool-adoption.md](daemon-pool-adoption.md).
+- 시험: `test_plane_watchdog.py`(규칙·연속·상승·해소·측정 실패·지표·질의), `test_dagster_shared_config.py`·`test_dagster_shared_cutover_script.py`
+  (env 렌더·거부), `test_dagster_shared_storage_integration.py`(격리 PG: 기본 60, 손으로 한 45를 되돌림, 50 적용, 잘못된 값·자리 이상 거부),
+  `frontend/e2e/plane-alerts.spec.ts`(경보·점검 항목 화면).
+
 ## 2026-11-24 — PinVi 예약 알림 planner env 배선(`PINVI_TELEGRAM_PLANNER_KEY`·`PINVI_NOTIFICATION_PLANNER_API_URL`)
 
 - 소유자 결정: PinVi 예약 알림 planner를 켠다. Manager compose가 `PINVI_TELEGRAM_BOT_TOKEN_DEFAULT`만 넘기고 planner 두 이름을 넘기지

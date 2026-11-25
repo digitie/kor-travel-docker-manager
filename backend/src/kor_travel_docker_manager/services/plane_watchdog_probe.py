@@ -242,6 +242,74 @@ WHERE r.status IN ('STARTING', 'STARTED', 'CANCELING')
 """
 
 
+#: storage DB를 소유한 role(= 공용 Dagster role, db-init이 owner를 확인한다)의 client 연결 수와 한도, instance 전체 자리.
+#: role 이름을 설정에 다시 적지 않고 DB owner에서 유도한다. CONNECTION LIMIT은 일반 client 연결만 센다(PostgreSQL 문서 —
+#: background worker·prepared transaction은 세지 않는다) — 그래서 `backend_type = 'client backend'`만 센다. role은 이름이 아니라
+#: OID(`usesysid`)로 맞춘다. owner가 superuser면 측정 실패로 본다(한도가 걸리지 않는 role이다).
+_ROLE_CONNECTIONS_SQL = """
+SELECT jsonb_build_object(
+  'role', r.rolname,
+  'superuser', r.rolsuper,
+  'limit', r.rolconnlimit,
+  'connections', (SELECT count(*) FROM pg_stat_activity a
+                   WHERE a.usesysid = r.oid AND a.backend_type = 'client backend'),
+  'client_connections', (SELECT count(*) FROM pg_stat_activity a WHERE a.backend_type = 'client backend'),
+  'max_connections', current_setting('max_connections')::int,
+  'reserved_connections', current_setting('superuser_reserved_connections')::int
+                          + COALESCE(current_setting('reserved_connections', true)::int, 0))
+FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba
+WHERE d.datname = current_database();
+"""
+
+
+@dataclass(frozen=True)
+class RoleConnections:
+    """공용 Dagster role의 연결 수 관측 한 번."""
+
+    role: str
+    connections: int
+    #: `pg_roles.rolconnlimit` — -1이면 한도 없음.
+    limit: int
+    #: instance 전체 client 연결 수(모든 role, superuser 포함).
+    client_connections: int
+    max_connections: int
+    #: superuser_reserved_connections + reserved_connections — 일반 role이 쓸 수 없는 자리.
+    reserved_connections: int
+
+    @property
+    def capacity(self) -> int:
+        """일반 role이 쓸 수 있는 instance 자리."""
+
+        return self.max_connections - self.reserved_connections
+
+    @property
+    def effective_limit(self) -> int:
+        """비율의 분모 — role 한도, 한도가 없으면 instance 자리."""
+
+        return self.limit if self.limit >= 0 else self.capacity
+
+    @property
+    def ratio(self) -> float | None:
+        return self.connections / self.effective_limit if self.effective_limit > 0 else None
+
+
+def role_connections_from_row(row: Mapping[str, Any]) -> RoleConnections:
+    def integer(key: str) -> int:
+        value = row[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(key)
+        return value
+
+    role = row["role"]
+    if not isinstance(role, str) or not role:
+        raise ValueError("role")
+    return RoleConnections(
+        role=role, connections=integer("connections"), limit=integer("limit"),
+        client_connections=integer("client_connections"), max_connections=integer("max_connections"),
+        reserved_connections=integer("reserved_connections"),
+    )
+
+
 @dataclass(frozen=True)
 class StorageTarget:
     container: str
@@ -346,6 +414,20 @@ class StorageClient:
             if key in result and record.location == key[0]:
                 result[key].append(record)
         return result
+
+    def role_connections(self) -> RoleConnections:
+        """storage DB owner role(공용 Dagster role)의 client 연결 수·한도와 instance 전체 자리."""
+
+        result = self.query_json(_ROLE_CONNECTIONS_SQL)
+        if not isinstance(result, dict):
+            raise ProbeError("role 연결 질의 결과의 모양이 예상과 다릅니다: 객체가 아닙니다")
+        if result.get("superuser") is not False:
+            # owner가 superuser면(복원·수동 변경) 한도가 걸리지 않고 admin 연결까지 세게 된다 — 판정하지 않는다.
+            raise ProbeError("storage DB의 owner role이 superuser이거나 확인되지 않습니다 — 공용 Dagster role이 아닙니다")
+        try:
+            return role_connections_from_row(result)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProbeError(f"role 연결 질의 결과의 모양이 예상과 다릅니다: {type(exc).__name__}") from exc
 
     def running_runs(self, location: str) -> int:
         """그 location의 실행 중(STARTING·STARTED·CANCELING) run 수."""

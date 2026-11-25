@@ -118,6 +118,59 @@ test('수집 경보 패널: 공항 통계 사전집계 갱신 지연은 주의�
   expect(backend.errors).toEqual([]);
 });
 
+// 공용 Dagster role 연결 수(소유자 결정 2026-11-25 — 한도 60, 80% 주의·95% 위험, 최근 3회 연속). 문구는 backend
+// `evaluate_role_connections`·`_role_connections_round`가 내는 모양 그대로다.
+const roleConnectionAlert = {
+  key: 'dagster_role_connections:kor_travel_dagster_shared_app', rule: 'dagster_role_connections',
+  rule_label: '공용 Dagster role 연결 수', subject: 'kor_travel_dagster_shared_app', severity: 'critical',
+  title: '공용 Dagster role kor_travel_dagster_shared_app 연결 58/60(97%) — 최근 3회 평가 연속 95% 이상',
+  detail: '한도 60. 한도에 닿으면 PostgreSQL이 이 role의 새 접속을 `too many connections for role`로 거절하고, 그때 접속하던 쪽'
+    + '(run worker면 그 run)이 실패합니다. daemon pool(`KOR_TRAVEL_DAGSTER_DAEMON_POOL_*`)을 줄이거나 한도'
+    + '(`KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`)를 올리기 전에 docs/daemon-pool-adoption.md의 접속 예산을 다시 셉니다. '
+    + 'instance 전체 client 연결 81/97.',
+  evidence: { connections: 58, limit: 60, ratio: 0.967, recent_ratios: [0.95, 0.967, 0.967], client_connections: 81, capacity: 97 },
+  since: '2026-11-25T03:06:00Z', last_seen: '2026-11-25T03:06:00Z', resolved_at: null,
+};
+
+test('수집 경보 패널: 공용 Dagster role 연결 수가 한도에 다가가면 위험으로, 평소에는 비율을 점검 항목에 보인다', async ({ page }, testInfo) => {
+  let payload: unknown = {
+    ...quietPlaneAlerts, host: 'n150',
+    summary: { state: 'firing', text: '경보 1건(심각 1, 주의 0)', critical: 1, warning: 0 },
+    alerts: [roleConnectionAlert],
+    checks: [{ rule: 'dagster_role_connections', label: '공용 Dagster role 연결 수', state: 'firing',
+      detail: '58/60(97%) · instance 81/97' }],
+  };
+  const backend = await mockBackend(page, testInfo, { get planeAlerts() { return payload; } });
+  await login(page);
+
+  const panel = page.getByRole('region', { name: '수집 경보' });
+  await expect(panel.getByTestId('plane-alerts-summary')).toHaveAttribute('role', 'alert');
+  const item = panel.getByRole('list', { name: '진행 중인 수집 경보' }).getByRole('listitem');
+  await expect(item).toHaveCount(1);
+  await expect(item).toHaveAttribute('data-severity', 'critical');
+  await expect(item).toContainText('연결 58/60(97%) — 최근 3회 평가 연속 95% 이상');
+  await expect(item).toContainText('too many connections for role');
+  await expect(item).toContainText('KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT');
+  await panel.getByText('점검 항목 1개').click();
+  await expect(panel.getByRole('list', { name: '수집 감시 점검 항목' }))
+    .toContainText('공용 Dagster role 연결 수 · 경보 — 58/60(97%) · instance 81/97');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath(`plane-alerts-role-connections-${testInfo.project.name}.png`), fullPage: true });
+
+  // 경보 없이 비율이 점검 항목에 보이고, 주의선을 한 번 넘은 것(50/60)은 연속 관측을 기다린다고 적힌다.
+  payload = {
+    ...quietPlaneAlerts, host: 'n150',
+    checks: [{ rule: 'dagster_role_connections', label: '공용 Dagster role 연결 수', state: 'ok',
+      detail: '50/60(83%) · instance 73/97 · 주의선 넘음 1/3회 연속' }],
+  };
+  await page.reload();
+  await expect(panel.getByTestId('plane-alerts-summary')).toContainText('경보가 없습니다.');
+  await panel.getByText('점검 항목 1개').click();
+  await expect(panel.getByRole('list', { name: '수집 감시 점검 항목' }))
+    .toContainText('공용 Dagster role 연결 수 · 정상 — 50/60(83%) · instance 73/97 · 주의선 넘음 1/3회 연속');
+  expect(backend.errors).toEqual([]);
+});
+
 test('수집 경보 패널: Telegram 발송 규칙과 최근 실패를 숨기지 않는다', async ({ page }, testInfo) => {
   const telegram = {
     name: 'telegram', enabled: true, configured: true,

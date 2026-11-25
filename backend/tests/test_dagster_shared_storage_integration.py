@@ -344,7 +344,7 @@ def test_db_init_and_migrate_prepare_the_shared_storage_idempotently(
         plane,
         "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, "
         f"rolbypassrls, rolconnlimit FROM pg_roles WHERE rolname = '{role}'",
-    ) == ["t|f|f|f|f|f|45"]
+    ) == ["t|f|f|f|f|f|60"]  # 연결 한도 기본 60(2026-11-25 소유자 결정)
     assert _sql(
         plane,
         "SELECT count(*) FROM pg_auth_members "
@@ -437,6 +437,64 @@ def test_db_init_refuses_a_password_that_would_break_the_url(isolated_plane: _Pl
     assert refused.returncode != 0
     assert "URI-unreserved" in refused.stderr
     assert _sql(plane, f"SELECT count(*) FROM pg_roles WHERE rolname = '{plane.role}'") == ["0"]
+
+
+_CONNECTION_LIMIT_ENV = "KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT"
+
+
+def _connection_limit(plane: _Plane) -> list[str]:
+    return _sql(plane, f"SELECT rolconnlimit FROM pg_roles WHERE rolname = '{plane.role}'")
+
+
+def test_db_init_applies_the_configured_connection_limit_and_undoes_a_manual_change(
+    isolated_plane: _Plane,
+) -> None:
+    """연결 한도는 root `.env` 키(비우면 60)이고, 재실행이 손으로 한 ALTER ROLE을 그 값으로 되돌린다.
+
+    n150 적용 경로(설치 뒤 db-init one-shot 재실행)가 live role의 한도를 실제로 바꾸는지 — 이미 있는 role에 ALTER가
+    걸리는지 — 를 같은 one-shot으로 본다.
+    """
+
+    plane = isolated_plane
+    _wait_healthy(plane.postgres)
+    first = _one_shot(_with_env(plane, {_CONNECTION_LIMIT_ENV: ""}), _DB_INIT)
+    assert first.returncode == 0, first.stdout[-2000:] + first.stderr[-2000:]
+    assert _connection_limit(plane) == ["60"]  # 빈 값은 compose 기본값
+
+    # 옛 리터럴 45로 손으로 되돌려 둔 것(n150 오늘 상태)을 재실행이 설정값으로 올린다.
+    _sql(plane, f'ALTER ROLE "{plane.role}" CONNECTION LIMIT 45')
+    again = _one_shot(plane, _DB_INIT)
+    assert again.returncode == 0, again.stdout[-2000:] + again.stderr[-2000:]
+    assert "connection limit 60 (non-superuser capacity" in again.stdout
+    assert _connection_limit(plane) == ["60"]
+
+    changed = _one_shot(_with_env(plane, {_CONNECTION_LIMIT_ENV: "50"}), _DB_INIT)
+    assert changed.returncode == 0, changed.stdout[-2000:] + changed.stderr[-2000:]
+    assert _connection_limit(plane) == ["50"]
+
+
+def test_db_init_refuses_a_connection_limit_before_touching_the_role(isolated_plane: _Plane) -> None:
+    """한도는 SQL에 그대로 들어간다 — 숫자가 아니거나 instance의 비-superuser 자리 이상이면 role을 만들기 전에 멈춘다."""
+
+    plane = isolated_plane
+    _wait_healthy(plane.postgres)
+    capacity = _sql(
+        plane,
+        "SELECT current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int"
+        " - COALESCE(current_setting('reserved_connections', true)::int, 0)",
+    )[0]
+    cases = [
+        ("0", "must be a positive integer"),
+        ("060", "must be a positive integer"),
+        ("60 SUPERUSER", "must be a positive integer"),
+        ("-1", "must be a positive integer"),
+        (capacity, f"must be below the non-superuser capacity {capacity}"),
+    ]
+    for value, message in cases:
+        refused = _one_shot(_with_env(plane, {_CONNECTION_LIMIT_ENV: value}), _DB_INIT)
+        assert refused.returncode != 0, value
+        assert message in refused.stderr, (value, refused.stderr[-2000:])
+        assert _sql(plane, f"SELECT count(*) FROM pg_roles WHERE rolname = '{plane.role}'") == ["0"], value
 
 
 def _with_env(plane: _Plane, overrides: dict[str, str]) -> _Plane:

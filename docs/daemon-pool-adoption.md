@@ -188,8 +188,12 @@ archive, uv 0.11.21, `SOURCE_DATE_EPOCH=1795475640`)가 byte 동일했고 packag
 webserver에만 `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING`(기본 1, 소유자 방향)을 싣는다. 이름은 wheel 원문의 상수와 대조한다
 (`test_the_rendered_env_names_are_the_ones_the_vendored_wheel_reads`). 빈 값·범위 밖은 Common이 종료 코드 2로 거절한다.
 
-**접속 예산 — 공용 role `kor_travel_dagster_shared_app` `CONNECTION LIMIT 45`.** 이 role 하나를 daemon·webserver·run worker(code-server의
-자식)·daemon의 임시 start_run instance가 함께 쓴다. `max_connections`(100)보다 이 한도가 먼저 걸린다.
+**접속 예산 — 공용 role `kor_travel_dagster_shared_app` `CONNECTION LIMIT 60`(2026-11-25 소유자 결정, 옛 45).** 이 role 하나를
+daemon·webserver·run worker(code-server의 자식)·daemon의 임시 start_run instance가 함께 쓴다. `max_connections`(100)보다 이 한도가 먼저
+걸린다. 한도는 root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`(비우면 60, 두 plane 공통)이고 db-init
+(`kor-travel-shared-db-init-dagster`)이 실행될 때마다 그 값으로 `ALTER ROLE`한다 — 손으로 한 `ALTER ROLE`은 다음 실행이 되돌린다.
+db-init은 양의 정수가 아니거나 instance의 비-superuser 자리(`max_connections − superuser_reserved_connections − reserved_connections`,
+오늘 두 호스트 97) 이상인 값을 role을 바꾸기 전에 거부한다.
 
 | 몫 | 상주(유휴) | 바쁜 시간 동시(가정) |
 |---|---|---|
@@ -202,16 +206,85 @@ webserver에만 `KOR_TRAVEL_DAGSTER_WEBSERVER_POOL_PRE_PING`(기본 1, 소유자
 
 - 상주: dev0 약 9(2026-11-24 n150 실측 이 role 연결 8, 전부 idle) → dev2 약 15. 격리 PG 실측(아래) daemon+webserver 상주 9는 빈
   workspace라 primary pool이 덜 찬 값이다.
-- 바쁜 시간 동시 최악: (a)24 + (b)6 + (c)12 + (d)3 ≈ **45** — 한도에 닿고, (e)(f)를 세면 넘을 수 있다. 넘치면 PostgreSQL이 새 접속을 `too many connections for role`로
-  거절하고 그때 접속하던 쪽(run worker면 run 실패)이 맞는다. daemon pool이 24를 모두 쓰는 것은 sensor·schedule worker(각 4)와
-  run coordinator·backfill·heartbeat가 한 engine에 동시에 몰릴 때뿐이라 흔하지 않지만, 0이라고 할 수 없다.
-- 그래서 기본값(24)은 Common 기본을 따르되 **올리지 않는다.** 한도를 넘는 징후(role 연결 수가 40 근처에 머묾, `too many connections`)가
-  보이면 ① `KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE=3`·`_MAX_OVERFLOW=3`(상한 18)으로 낮추거나 ② role 한도를 올린다. ②의 근거
-  "n150 전체 client backend 36/100(2026-11-24), 이 role 몫 8을 빼면 다른 DB 약 28"은 **지금 사용량**이지 다른 DB들의 상한이
-  아니다. 또 n150은 `rehearsal/rebuildable`이라 `ensure dagster`(db-init)가 거부되고, 손으로 한 `ALTER ROLE`은 다음 db-init이 45로
-  되돌린다 — ②는 db-init의 `CONNECTION LIMIT` 값 자체를 바꾸는 PR과 그 적용 경로를 함께 정하는 소유자 결정이다.
-- 관측 수단이 아직 없다 — 이 role의 연결 수 지표·경보(수집 감시 또는 Prometheus)는 후속이다(tasks.md). 그 전까지는 배포 뒤
-  `pg_stat_activity`를 손으로 본다.
+- 바쁜 시간 동시 최악: (a)24 + (b)6 + (c)12 + (d)3 ≈ **45**(n150; odroid는 (c)10이라 ≈43) — 옛 한도 45에 닿았다. (e)(f)를 세면
+  더 늘 수 있다. 넘치면 PostgreSQL이 새 접속을 `too many connections for role`로 거절하고 그때 접속하던 쪽(run worker면 run 실패)이
+  맞는다. daemon pool이 24를 모두 쓰는 것은 sensor·schedule worker(각 4)와 run coordinator·backfill·heartbeat가 한 engine에 동시에
+  몰릴 때뿐이라 흔하지 않지만, 0이라고 할 수 없다.
+- 소유자 결정(2026-11-25): pool은 Common 기본(24)을 그대로 두고 **role 한도를 60으로** 올린다(②). 최악 45는 60의 75%, odroid 43은
+  72%다 — 아래 수집 경보의 주의선(80%) 밑이고, (e)(f)가 몇 개 더해지면 주의선에 닿는다. 그래도 넘치는 징후가 보이면
+  ① `KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE=3`·`_MAX_OVERFLOW=3`(상한 18)이 남은 수단이다.
+- **관측**: 수집 경보(plane watchdog) 규칙 `dagster_role_connections` — 이 role의 client 연결 수 / 한도가 최근 3회 평가(약 4~6분) 연속
+  80% 이상이면 주의, 95% 이상이면 위험. `/metrics`에 `ktdm_dagster_role_connections`·`_connection_limit`·`_connection_ratio{role}`와
+  instance 전체 `ktdm_shared_postgres_client_connections`·`ktdm_shared_postgres_connection_capacity`
+  ([plane-watchdog.md](plane-watchdog.md) §3.3).
+
+**공용 instance 여유 — 한도는 칸막이이지 예약이 아니다(2026-11-25 두 호스트 읽기 전용 실측).** `pg_settings`·`pg_roles.rolconnlimit`·
+`pg_database.datconnlimit`·`pg_stat_activity`(client backend). 두 instance 모두 PostgreSQL 18.6, `max_connections` 100,
+`superuser_reserved_connections` 3, `reserved_connections` 0 → 비-superuser 자리 **97**.
+
+| 호스트 | 유한 한도 | 유한 한도 합 / 자리 | 한도 없는 role(지금 연결) | 지금 client 연결 | Dagster가 60을 다 쓸 때 남는 자리 |
+|---|---|---|---|---|---|
+| n150 | role `kor_travel_dagster_shared_app` 45 → **60**(지금 13) · DB `kor_travel_map` `datconnlimit` 55(재구축이 `floor(0.57 × 97)`로 건다, 지금 17) | 100 → **115 / 97 — 초과(18)** | `pinvi_application_runtime` 3, `kor_travel_concierge_app` 2, 앱 role 넷(geo·weather·transport·map_dagster) 0 | 36(superuser 2 포함) | 37 — Map 지금 17 + PinVi·Concierge 5 = 22를 담는다 |
+| odroid | role `kor_travel_dagster_shared_app` 45 → **60**(지금 9) | 45 → **60 / 97** — 초과 아님 | `kor_travel_weather_app` 8, `kor_travel_geo_app` 7, `kor_travel_transport_app` 4 | 30(superuser 3 포함) | 37 — geo·weather·transport 지금 19를 담는다 |
+
+role별 수는 모든 backend 종류를 센 같은 질의의 다른 줄이라 client 연결 합과 1 어긋난다(n150 37 vs 36, odroid 31 vs 30 — 조사 질의 자신의
+연결·표본 시각 차이). 2026-11-25 2차 표본: n150 이 role 13·client 26, odroid 9·30. 2026-11-25 n150 사전 확인 A(아래)는 소비자 다섯
+컨테이너 모두 `same`이었다.
+
+> ⚠️ **n150은 유한 한도의 합이 자리를 넘는다(115 > 97, 옛 45로도 100 > 97).** Dagster role 60과 Map DB 55가 **동시에** 다 차면
+> instance 자리가 먼저 끝나고, 그때부터는 한도와 무관하게 비-superuser의 새 접속이 모두 `remaining connection slots are reserved`로
+> 거절된다(PinVi·Concierge 포함 — 이 둘은 한도가 없어 보장된 몫도 없다). 두 한도는 각자 "한 테넌트가 instance를 다 먹지 못하게"
+> 하는 칸막이이지 서로의 몫을 예약하지 않는다. 지금 실사용은 합 36으로 여유가 크고, 두 최악(Dagster 45·Map 동시 run 6)이 한 시각에
+> 겹칠 일은 드물다고 보고 받아들인다. 위험해지는 신호는 `ktdm_shared_postgres_client_connections`가 자리 97에 다가가는 것이다 — 그때는
+> Map DB 한도(0.57)나 Dagster role 한도를 낮추거나 `max_connections`를 올린다(`max_connections`는 PG 재시작이 필요하다).
+> odroid는 유한 한도가 Dagster 하나라 합 초과는 없지만, 한도 없는 세 앱 role의 합이 37을 넘으면 같은 일이 생긴다(지금 19).
+
+**n150 적용 경로(설치 뒤 한 번, 서비스 무중단).** n150은 `rehearsal/rebuildable`이라 `ktdctl ensure dagster`가 거부되고(production ensure
+금지), plane 수렴(`dagster-plane converge`·pinned 재구축)은 storage migrate만 돌리고 db-init은 돌리지 않는다. 그래서 설치된 release의
+compose로 db-init one-shot을 lock G 아래서 직접 돌린다 — `scripts/dagster-shared-cutover.sh`의 G3-a 단계(30 → 45 때)와 같은 명령이다.
+
+```bash
+# 1) 이 PR 이상의 Manager release 설치(trusted installer) — backend 재기동으로 감시 규칙도 함께 들어온다.
+
+# 2) 사전 확인 A — db-init은 role 비밀번호도 root `.env` 값으로 다시 건다. 떠 있는 소비자(daemon·webserver·code-server)의 URL
+#    비밀번호와 같아야 무중단이다. 값은 출력하지 않고 해시만 비교한다(`bash -x` 금지). 모든 줄이 "same"이어야 한다.
+sudo bash -s <<'EOF'
+want=$(printf %s "$(sed -n 's/^KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD=//p' /opt/kor-travel-docker-manager/.env)" | sha256sum)
+for c in $(docker ps --format '{{.Names}}'); do
+  got=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" \
+    | sed -n 's#^[A-Z_]*=postgresql[^:]*://kor_travel_dagster_shared_app:\([^@]*\)@.*#\1#p' | sort -u)
+  [ -n "$got" ] || continue
+  if [ "$(printf %s "$got" | sha256sum)" = "$want" ]; then echo "$c same"; else echo "$c DIFFERENT"; fi
+done
+EOF
+#    DIFFERENT가 하나라도 있으면 멈춘다 — `.env`가 그 컨테이너 생성 뒤에 바뀐 것이다. 이대로 돌리면 그 소비자의 새 접속이 인증에 실패한다.
+#    (daemon·webserver는 `ktdctl dagster-plane converge --dry-run`의 outcome `current`로도 같은 것을 본다.)
+# 3) 사전 확인 B — lock G 파일이 Manager가 만든 모양(root·0600·링크 1)인가. 없으면 flock이 0644로 만들어 이후 Manager 변경이 모두
+#    "lock is unsafe"로 거부되므로, 이 값이 아니면 돌리지 않는다.
+sudo stat -c '%u:%a:%h' /run/lock/kor-travel-docker-manager/global-mutation.lock   # → 0:600:1
+
+# 4) role 한도 적용: 멱등 ALTER ROLE(CONNECT 재부여도 멱등). 종료 코드 75는 다른 Manager 변경이 lock을 쥐고 있다는 뜻이다.
+sudo flock -n -E 75 /run/lock/kor-travel-docker-manager/global-mutation.lock \
+  docker compose -p kor-travel-docker-manager --project-directory /opt/kor-travel-docker-manager \
+    -f /opt/kor-travel-docker-manager/docker-compose.yml --env-file /opt/kor-travel-docker-manager/.env \
+    run -T --rm --no-deps kor-travel-shared-db-init-dagster
+#    출력 중: "role kor_travel_dagster_shared_app connection limit 60 (non-superuser capacity 97)"(뒤에 REVOKE·GRANT 줄이 이어진다)
+# 5) 확인(읽기 전용)
+sudo docker exec -u postgres kor-travel-shared-postgres sh -c \
+  'psql -X -qAt -h /var/run/postgresql -p 11000 -U "$POSTGRES_USER" -d postgres -c "SELECT rolconnlimit FROM pg_roles WHERE rolname = '\''kor_travel_dagster_shared_app'\''"'
+#    → 60
+```
+
+- **무중단인 이유(사전 확인 A가 전제)**: `ALTER ROLE … CONNECTION LIMIT`은 새 접속 시도에만 걸린다 — 열린 세션은 그대로이고 컨테이너
+  재생성·재시작이 없다(격리 PG18에서 열린 세션이 재실행 뒤에도 살아 있고 같은 비밀번호로 새 로그인이 되는 것을 적대 리뷰가 확인).
+  비밀번호를 같은 값으로 다시 거는 것도 영향이 없다 — 값이 다르면(사전 확인 A의 DIFFERENT) 무중단이 아니다. `REVOKE/GRANT CONNECT`는
+  이미 그 상태라 바뀌지 않는다.
+- **lock**: Manager가 쓰는 host 변경 lock G다. 75로 끝나면 다른 Manager 변경(배포·재구축·자동 재시작)이 도는 중이다 — 끝난 뒤 다시 한다.
+- **확인 둘 더**: 수집 경보 화면의 점검 항목 "공용 Dagster role 연결 수"가 `N/60(…)`으로 보이고, `/metrics`의
+  `ktdm_dagster_role_connection_limit{role="kor_travel_dagster_shared_app"}`이 60이다.
+- **odroid(Codex)**: plane이 Manager compose가 아니라 host compose(`/opt/kor-travel-odroid/compose.yml`)이고 그 db-init에 리터럴 45가
+  들어 있다(2026-11-25 읽기 전용 확인) — 그 사본의 두 문장을 60으로 바꾸거나 이 정의로 갈아 끼운 뒤 같은 one-shot을 그 project에서 돌린다.
+  고치지 않고 손으로 `ALTER ROLE`하면 다음 db-init이 45로 되돌린다.
 
 **실제 SDK 확인(WSL 격리 PG, 운영 무관).** 새 이미지로 storage migrate → daemon(4·4·10) → webserver(pre-ping 1)를 띄워 daemon stderr
 `daemon 연결 풀: primary engine 3개 각 pool_size=4 max_overflow=4 pool_timeout=10s`, webserver stderr `webserver storage pre-ping: 켜짐`,
