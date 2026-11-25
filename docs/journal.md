@@ -1,3 +1,15 @@
+## 2026-11-25 — Transport core 적용 성공 뒤 post-deploy warm 자동 호출
+
+- 출처: Transport `scripts/post-deploy-warm.sh`(ADR-016 본문 준비·loopback export smoke)를 운영자가 배포 뒤 손으로 불렀다. Transport
+  런북이 "Manager 자동 호출은 후속"으로 남긴 항목이다.
+- 변경: `service-release apply-core-candidate transport --confirm`이 current를 발행(`success: true`)하면 CLI가 G·project lease를
+  푼 뒤 승인 SHA의 스크립트 blob을 600초 상한으로 한 번 실행하고 `post_deploy_warm`에 상태·exit code·WARN 줄·가린 출력을 남긴다.
+  warm 결과는 exit code·current를 바꾸지 않는다. `--skip-post-deploy-warm`으로 끌 수 있다. 상세는
+  `docs/service-current-release.md` "Transport 배포 직후 best-effort warm".
+- 시험: `backend/tests/test_transport_post_deploy_warm.py`(승인 blob 실행·작업 트리 변조 무시, 로컬 Docker 고정·부모 env 비상속,
+  exit 2/기타, 프로세스 그룹 timeout, 스크립트 부재, env 미독 시 본문 보류, 실제 config의 project·port 유도, CLI의 성공 confirm만
+  호출·dry-run/실패 미호출·skip). 운영 호스트 실행은 하지 않았다.
+
 ## 2026-11-25 — frontend 배포 문서를 WSL 빌드·디렉터리 교체 절차로 고침(운영 박스 빌드 금지)
 
 - 출처: 소유자 결정(2026-11-24) — 이미지·frontend 빌드는 Windows 개발 장비 WSL에서만, n150·odroid는 받기만 한다(ADR-67과 같은

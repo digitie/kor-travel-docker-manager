@@ -12,9 +12,11 @@ import inspect
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from copy import deepcopy
@@ -1169,3 +1171,115 @@ def _apply(
             else "core 후보 단계가 실패했습니다. current는 발행하지 않았습니다",
         )
     return result
+
+
+# ---- 배포 직후 best-effort warm (Transport scripts/post-deploy-warm.sh) ----
+# Transport가 소유한 스크립트다. 인수 오류(exit 2)를 빼면 항상 exit 0이고 문제는 stderr
+# `post-deploy-warm: WARN ...` 줄로만 남긴다. Manager는 그 결과를 기록만 하고 배포 성패·current를
+# 바꾸지 않는다. 스크립트 내부 상한(준비 180+70초, smoke 20*8+70초, /health 5초)보다 넉넉한 바깥 안전망이다.
+WARM_SCRIPT = "scripts/post-deploy-warm.sh"
+WARM_TIMEOUT_SECONDS = 600
+_WARN_PREFIX = "post-deploy-warm: WARN "
+_WARM_OUTPUT_LIMIT = 64 * 1024
+
+
+def _transport_backend_api_port(config: dict, project: str) -> int:
+    """target의 backend `expected_ports`(호스트 포트)에서 유도한다. 두 번 선언하지 않는다."""
+    ports = [
+        spec.get("expected_ports")
+        for spec in config.get("containers", {}).values()
+        if spec.get("external_project") == project and spec.get("compose_service") == "backend"
+    ]
+    if len(ports) != 1 or not isinstance(ports[0], list) or len(ports[0]) != 1:
+        raise ServiceReleaseError("Transport backend의 단일 expected_ports 선언이 필요합니다")
+    host_port = str(ports[0][0]).split(":", 1)[0]
+    if not host_port.isdigit() or not 1 <= int(host_port) <= 65535:
+        raise ServiceReleaseError("Transport backend 호스트 포트가 올바르지 않습니다")
+    return int(host_port)
+
+
+def _warm_secrets(root: Path) -> list[tuple[str, str | None]] | None:
+    try:
+        return frozen._secrets({"transport": release.read_current_release("transport", root=root)})
+    except (OSError, ValueError, KeyError, TypeError, ServiceReleaseError):
+        return None
+
+
+def post_deploy_warm(
+    *,
+    source_clone: Path,
+    source_sha: str,
+    root: Path,
+    config: dict,
+    timeout: int = WARM_TIMEOUT_SECONDS,
+) -> dict:
+    """성공한 core 적용 뒤(G·project lease를 푼 다음) 승인 M의 warm 스크립트를 한 번 부른다.
+
+    스크립트 본문은 작업 트리가 아니라 승인 SHA의 Git blob에서 읽는다(적용 뒤 clone이 바뀌어도 같은 본문).
+    어떤 결과도 예외로 올리지 않는다 — 배포는 이미 발행됐고 warm은 best-effort다.
+    """
+    started = time.monotonic()
+    result: dict[str, Any] = {"script": WARM_SCRIPT, "source_sha": source_sha}
+    try:
+        project = config["targets"]["transport"]["external_project"]["project"]
+        port = _transport_backend_api_port(config, project)
+        result.update(project=project, api_port=port)
+        if not _git(source_clone, "ls-tree", "--name-only", source_sha, WARM_SCRIPT).strip():
+            return {**result, "status": "unavailable", "warnings": [],
+                    "message": "승인 source에 warm 스크립트가 없어 건너뛰었습니다"}
+        body = _git(source_clone, "show", f"{source_sha}:{WARM_SCRIPT}")
+    except (ServiceReleaseError, KeyError, TypeError, OSError, subprocess.TimeoutExpired):
+        return {**result, "status": "error", "warnings": [],
+                "message": "warm 스크립트 또는 좌표를 확인하지 못해 건너뛰었습니다"}
+    # 스크립트는 127.0.0.1의 API를 부르므로 Docker도 이 호스트의 로컬 daemon이어야 한다.
+    # 부모 환경(DOCKER_CONTEXT·원격 DOCKER_HOST·앱 secret)을 넘기지 않는다.
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": "/nonexistent",
+        "LANG": "C.UTF-8",
+        "DOCKER_HOST": persistent.LOCAL_DOCKER_HOST,
+    }
+    argv = ["/bin/bash", "-c", body, WARM_SCRIPT, "--project", project, "--api-port", str(port)]
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            process = subprocess.Popen(
+                argv, cwd="/", env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                start_new_session=True,
+            )
+        except OSError:
+            return {**result, "status": "error", "warnings": [],
+                    "message": "warm 스크립트를 시작하지 못했습니다"}
+        status = None
+        try:
+            code = process.wait(timeout=timeout)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
+            status = "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "interrupted"
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            code = process.wait()
+
+        out.seek(0)
+        err.seek(0)
+        raw_out = out.read(_WARM_OUTPUT_LIMIT).decode("utf-8", errors="replace")
+        raw_err = err.read(_WARM_OUTPUT_LIMIT).decode("utf-8", errors="replace")
+    if status is None:
+        status = "completed" if code == 0 else "invalid_arguments" if code == 2 else "failed"
+    # 개수는 원문에서 센다(내용 없음). 본문은 가린 뒤에만 낸다 — env를 못 읽으면 본문을 내지 않는다.
+    warning_count = sum(line.startswith(_WARN_PREFIX) for line in raw_err.splitlines())
+    secrets = _warm_secrets(root)
+    stdout, stderr = frozen._detail(raw_out, secrets), frozen._detail(raw_err, secrets)
+    return {
+        **result,
+        "status": status,
+        "exit_code": code,
+        "elapsed_seconds": round(time.monotonic() - started, 1),
+        "warning_count": warning_count,
+        "warnings": [line for line in stderr.splitlines() if line.startswith(_WARN_PREFIX)]
+        if secrets is not None else [],
+        "output_redacted": secrets is not None,
+        "clean": status == "completed" and warning_count == 0,
+        "stdout": stdout,
+        "stderr": stderr,
+    }

@@ -372,6 +372,28 @@ public metadata나 Git에 넣지 않는다.
 두 소스 리뷰·정확 CI·병합·trusted SDK 설치 및 최종 이미지 tuple gate 이후다.
 
 
+### Transport 배포 직후 best-effort warm
+
+`apply-core-candidate transport --confirm`이 `success: true`(current 발행)로 끝나면 CLI가 G와 project lease를 **푼 뒤**
+Transport 소유 `scripts/post-deploy-warm.sh`를 한 번 부르고 결과를 출력 JSON의 `post_deploy_warm`에 남긴다
+(Transport `docs/runbooks/deployment.md` "배포 직후 best-effort warm"). dry-run·실패·중단 결과에서는 부르지 않는다.
+Transport에는 자동 rollback이 없으므로 rollback 뒤 warm도 없다.
+
+- 본문은 작업 트리가 아니라 승인 `--source-sha`의 Git blob(`git show <M>:scripts/post-deploy-warm.sh`)을 `bash -c`로
+  실행한다. 그 SHA에 스크립트가 없으면(옛 Transport) `status: unavailable`로 건너뛴다.
+- 인수는 `--project`(target `external_project.project`)와 `--api-port`(같은 project의 backend `expected_ports` 호스트 포트)에서
+  유도하며 따로 선언하지 않는다. 스크립트가 `127.0.0.1`의 API를 부르므로 Docker도 `DOCKER_HOST=unix:///var/run/docker.sock`
+  으로 고정하고, 부모 환경(원격 `DOCKER_HOST`·`DOCKER_CONTEXT`·앱 secret)은 넘기지 않는다.
+- 바깥 상한은 600초(스크립트 내부 상한 합 약 490초보다 넉넉)이고, 넘거나 Ctrl-C면 프로세스 그룹을 SIGKILL하고
+  `timeout`/`interrupted`로 기록한다. 컨테이너 안 `docker exec` 프로세스는 스크립트 설명대로 자기 상한까지 남을 수 있다.
+- `status`(`completed`·`invalid_arguments`(exit 2)·`failed`·`timeout`·`interrupted`·`unavailable`·`error`), `exit_code`,
+  `warning_count`, `warnings`(`post-deploy-warm: WARN ...` 줄), 가린 stdout/stderr(각 4000자), `clean`을 남긴다. WARN 줄은
+  stderr에도 그대로 낸다. 출력은 Transport env 파일 값으로 가리며, env를 읽지 못하면 본문 없이 개수만 남긴다.
+- **warm 결과는 CLI exit code·current·배포 성패를 바꾸지 않는다.** 확인은 `post_deploy_warm.clean`과 `warnings`로 한다.
+- 시점: Manager 경로는 Transport 스케줄·센서 복원을 운영자가 CLI 뒤에 하므로, warm은 instigator가 아직 STOPPED인 동안 돈다.
+  본문이 재사용(`reused`)되면 수 초지만 최악에는 수 분 수집 공백이 늘 수 있다. 공백을 피해야 하는 창이면
+  `--skip-post-deploy-warm`으로 끄고, instigator 복원 뒤 Transport 런북대로 승인 clone에서 수동 실행한다.
+
 ### Transport Dagster 영속 state volume
 
 영속 경로에서는 같은 CLI와 normal build receipt v1을 사용한다. runtime receipt의
