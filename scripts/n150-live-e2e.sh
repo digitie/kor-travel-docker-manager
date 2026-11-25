@@ -65,8 +65,8 @@ cred_file="${KTDM_LIVE_E2E_CREDENTIALS:-/root/.ktdm-e2e.env}"
 [[ "$cred_file" == /* ]] || die "KTDM_LIVE_E2E_CREDENTIALS는 절대 경로여야 합니다"
 gate="${KTDM_LIVE_E2E_GATE:-$HOME/gate-slot.sh}"
 [[ -x "$gate" ]] || die "test gate 실행 파일이 없습니다: $gate (n150의 ~/gate-slot.sh를 거쳐야 합니다)"
-docker_bin="$(command -v docker || true)"
-[[ -n "$docker_bin" ]] || die "docker가 없습니다"
+docker_bin="${KTDM_LIVE_E2E_DOCKER:-/usr/bin/docker}"
+[[ -x "$docker_bin" ]] || die "docker 실행 파일이 없습니다: $docker_bin"
 
 write_opt_in="${KTDM_LIVE_E2E_WRITE:-0}"
 [[ "$write_opt_in" == 0 || "$write_opt_in" == 1 ]] || die "KTDM_LIVE_E2E_WRITE는 0 또는 1이어야 합니다"
@@ -82,6 +82,9 @@ root_reader='f=$1
 d=$(dirname -- "$f")
 if [ -L "$f" ] || [ ! -f "$f" ]; then
   echo "error: 자격 파일이 없거나 일반 파일이 아닙니다: $f" >&2; exit 3
+fi
+if [ "$(readlink -f -- "$f")" != "$f" ]; then
+  echo "error: 자격 파일 경로에 심볼릭 링크나 . / ..가 끼어 있습니다: $f" >&2; exit 3
 fi
 fm=$(stat -c "%u %a" -- "$f") || exit 3
 dm=$(stat -c "%u %a" -- "$d") || exit 3
@@ -133,6 +136,8 @@ for key in KTDM_LIVE_WEB_URL KTDM_LIVE_USERNAME KTDM_LIVE_PASSWORD; do
 done
 web_url="${cred[KTDM_LIVE_WEB_URL]%/}"
 [[ "$web_url" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || die "KTDM_LIVE_WEB_URL은 scheme://host[:port] 형식이어야 합니다(경로 없이)"
+[[ "$web_url" == https://* || "$web_url" =~ ^http://(127\.0\.0\.1|localhost)(:[0-9]+)?$ ]] \
+  || die "KTDM_LIVE_WEB_URL은 loopback이 아니면 https여야 합니다(운영 자격이 평문으로 나가지 않게)"
 
 pw_version="$(sed -n 's/.*"@playwright\/test": *"\([0-9][0-9.]*\)".*/\1/p' "$frontend_dir/package.json" | head -n 1)"
 [[ -n "$pw_version" ]] || die "frontend/package.json에서 @playwright/test 정확한 버전을 찾지 못했습니다"
@@ -155,6 +160,13 @@ fi
 # ***로 가린 뒤 터미널에 낸다.
 inner=$(cat <<'INNER'
 set -euo pipefail
+# 같은 저장소 러너가 겹치면 node_modules volume과 tarball을 서로 덮는다 — 차례로 돈다.
+exec 9>/tmp/.npm/.live-e2e.lock
+flock 9
+# 자격 값은 Playwright에만 필요하다. 내려받기·npm 설치 단계에는 넘기지 않는다.
+unset_args=()
+IFS=, read -r -a secret_names <<<"$LIVE_E2E_SECRET_VARS"
+for name in "${secret_names[@]}"; do unset_args+=(-u "$name"); done
 case "$(uname -m)" in
   x86_64) node_arch=x64; node_sha="$LIVE_E2E_NODE_SHA256_X64" ;;
   aarch64) node_arch=arm64; node_sha="$LIVE_E2E_NODE_SHA256_ARM64" ;;
@@ -166,7 +178,7 @@ node_tarball="$node_cache/${node_dist}.tar.gz"
 mkdir -p "$node_cache"
 if [[ ! -f "$node_tarball" ]] || ! printf '%s  %s\n' "$node_sha" "$node_tarball" | sha256sum -c --status; then
   node_part="$node_cache/.${node_dist}.part"
-  node -e 'fetch(process.argv[1]).then(async (r) => { if (!r.ok) throw new Error("HTTP " + r.status); require("fs").writeFileSync(process.argv[2], Buffer.from(await r.arrayBuffer())); }).catch((e) => { console.error(e.message); process.exit(1); })' \
+  env "${unset_args[@]}" node -e 'fetch(process.argv[1]).then(async (r) => { if (!r.ok) throw new Error("HTTP " + r.status); require("fs").writeFileSync(process.argv[2], Buffer.from(await r.arrayBuffer())); }).catch((e) => { console.error(e.message); process.exit(1); })' \
     "https://nodejs.org/dist/v${LIVE_E2E_NODE_VERSION}/${node_dist}.tar.gz" "$node_part"
   printf '%s  %s\n' "$node_sha" "$node_part" | sha256sum -c --status \
     || { echo "error: ${node_dist}.tar.gz SHA-256 불일치" >&2; exit 1; }
@@ -177,11 +189,11 @@ tar -xzf "$node_tarball" -C /tmp/live-e2e-node --strip-components=1 --no-same-ow
 export PATH="/tmp/live-e2e-node/bin:$PATH"
 hash -r
 [[ "$(node --version)" == "v${LIVE_E2E_NODE_VERSION}" ]] || { echo "error: Node 버전 불일치" >&2; exit 1; }
-npm install --global --no-audit --no-fund "npm@${LIVE_E2E_NPM_VERSION}" >/dev/null
+env "${unset_args[@]}" npm install --global --no-audit --no-fund "npm@${LIVE_E2E_NPM_VERSION}" >/dev/null
 hash -r
 [[ "$(npm --version)" == "$LIVE_E2E_NPM_VERSION" ]] || { echo "error: npm 버전 불일치" >&2; exit 1; }
 if [[ "$LIVE_E2E_SKIP_NPM_CI" != 1 ]]; then
-  npm ci --no-audit --no-fund --engine-strict --ignore-scripts >/dev/null
+  env "${unset_args[@]}" npm ci --no-audit --no-fund --engine-strict --ignore-scripts >/dev/null
 fi
 
 redact_js=$(cat <<'JS'
@@ -189,11 +201,32 @@ const names = (process.env.LIVE_E2E_REDACT || '').split(',').filter(Boolean);
 const secrets = [];
 for (const name of names) {
   const value = process.env[name];
-  if (value && value.length >= 3) secrets.push(value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1));
+  if (value && value.length >= 3) {
+    secrets.push(value, encodeURIComponent(value), encodeURIComponent(value).replace(/%20/g, '+'),
+      JSON.stringify(value).slice(1, -1), Buffer.from(value).toString('base64'));
+  }
 }
 secrets.sort((a, b) => b.length - a.length);
 const redact = (text) => secrets.reduce((acc, secret) => acc.split(secret).join('***'), text);
-if (process.argv[1] === 'filter') {
+if (process.argv[1] === 'scrub') {
+  // 실패 산출물(error-context.md·report.json 등 글 파일)에 비밀번호가 남지 않게 덮어쓴다.
+  const fs = require('fs');
+  const path = require('path');
+  let changed = 0;
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile() && /\.(md|json|txt|log|html|yml|yaml)$/i.test(entry.name)) {
+        const before = fs.readFileSync(file, 'utf8');
+        const after = redact(before);
+        if (after !== before) { fs.writeFileSync(file, after); changed += 1; }
+      }
+    }
+  };
+  if (fs.existsSync(process.argv[2])) walk(process.argv[2]);
+  if (changed) console.log(`live_e2e_scrub: 결과 파일 ${changed}개에서 비밀번호 값을 ***로 바꿨습니다`);
+} else if (process.argv[1] === 'filter') {
   const rl = require('readline').createInterface({ input: process.stdin });
   rl.on('line', (line) => process.stdout.write(redact(line) + '\n'));
 } else {
@@ -222,6 +255,10 @@ if (process.argv[1] === 'filter') {
     }
   };
   for (const suite of report.suites || []) walk(suite, []);
+  for (const error of report.errors || []) {
+    const lines = String(error.message || '').replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+    bad.unshift(`  - [실행 오류] ${redact(lines.find((line) => line.trim()) || '').slice(0, 300)}`);
+  }
   console.log(`live_e2e_summary 통과=${stats.expected ?? 0} 실패=${stats.unexpected ?? 0} flaky=${stats.flaky ?? 0} 건너뜀=${stats.skipped ?? 0} 소요=${Math.round((stats.duration || 0) / 1000)}초`);
   for (const line of bad) console.log(line);
 }
@@ -230,13 +267,16 @@ JS
 
 mkdir -p "$LIVE_E2E_RESULTS_PARENT"
 chmod 700 "$LIVE_E2E_RESULTS_PARENT"
+trap 'chown -R "$LIVE_E2E_OWNER" "$LIVE_E2E_RESULTS_PARENT" 2>/dev/null || true' EXIT
+# 이전 실행의 보고서를 이번 결과로 읽지 않게 비운다.
+if [[ -f "$LIVE_E2E_REPORT" ]]; then : >"$LIVE_E2E_REPORT"; fi
 start_ms=$(($(date +%s) * 1000))
 status=0
 npx playwright test --config "$LIVE_E2E_CONFIG" "$@" 2>&1 | node -e "$redact_js" filter || status=$?
+node -e "$redact_js" scrub "$LIVE_E2E_RESULTS_PARENT" || status=1
 if [[ "$LIVE_E2E_LIST_ONLY" != 1 ]]; then
-  node -e "$redact_js" summary "$LIVE_E2E_REPORT" "$start_ms"
+  node -e "$redact_js" summary "$LIVE_E2E_REPORT" "$start_ms" || true
 fi
-chown -R "$LIVE_E2E_OWNER" "$LIVE_E2E_RESULTS_PARENT" 2>/dev/null || true
 exit "$status"
 INNER
 )
@@ -249,7 +289,7 @@ export KTDM_LIVE_EXPECT_HOST="$expect_host"
 cred=()
 
 docker_args=(
-  run --rm --init --ipc=host --network host
+  run --rm --init --shm-size=1g --network host
   --env KTDM_LIVE_E2E --env KTDM_LIVE_WEB_URL --env KTDM_LIVE_USERNAME --env KTDM_LIVE_PASSWORD
   --env KTDM_LIVE_EXPECT_HOST
   -e LIVE_E2E_REDACT=KTDM_LIVE_PASSWORD
@@ -267,6 +307,8 @@ docker_args=(
   -e npm_config_cache=/tmp/.npm
   -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
   -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+  -e PLAYWRIGHT_NO_COPY_PROMPT=1
+  -e LIVE_E2E_SECRET_VARS=KTDM_LIVE_PASSWORD,KTDM_LIVE_USERNAME
 )
 if [[ "$write_opt_in" == 1 ]]; then
   export KTDM_LIVE_E2E_WRITE=1

@@ -58,6 +58,7 @@ def _run(box: dict[str, Path], *args: str, env: dict[str, str] | None = None,
     full_env = {
         "PATH": f"{box['bin']}:/usr/bin:/bin", "HOME": str(box["root"]),
         "KTDM_LIVE_E2E_CREDENTIALS": str(box["cred"]), "KTDM_LIVE_E2E_GATE": str(box["bin"] / "gate"),
+        "KTDM_LIVE_E2E_DOCKER": str(box["bin"] / "docker"),
         "FAKE_DOCKER_ARGS": str(box["args"]), "FAKE_DOCKER_ENV": str(box["env"]),
         **(env or {}),
     }
@@ -139,6 +140,7 @@ def test_bad_lines_report_line_number_without_value(box, extra, message):
         ("KTDM_LIVE_USERNAME=admin\nKTDM_LIVE_PASSWORD=x1234\n", "KTDM_LIVE_WEB_URL가 없습니다"),
         (VALID.replace("https://manager.example.test/", "https://manager.example.test/login"), "경로 없이"),
         (VALID.replace(f"KTDM_LIVE_PASSWORD='{PASSWORD}'\n", ""), "KTDM_LIVE_PASSWORD가 없습니다"),
+        (VALID.replace("https://manager.example.test/", "http://manager.example.test"), "loopback이 아니면 https"),
     ],
 )
 def test_required_keys_and_url_shape(box, content, message):
@@ -165,6 +167,9 @@ def test_valid_credentials_pass_names_only_and_fixed_read_only_config(box):
     assert f"{ROOT / 'frontend'}:/work" in argv
     assert not any(item.startswith(f"{ROOT}:") for item in argv)
     assert "KTDM_LIVE_E2E_WRITE" not in argv
+    assert "PLAYWRIGHT_NO_COPY_PROMPT=1" in argv
+    assert "LIVE_E2E_SECRET_VARS=KTDM_LIVE_PASSWORD,KTDM_LIVE_USERNAME" in argv
+    assert "--shm-size=1g" in argv and "--ipc=host" not in argv
     env = box["env"].read_text(encoding="utf-8").splitlines()
     assert "KTDM_LIVE_WEB_URL=https://manager.example.test" in env
     assert "KTDM_LIVE_USERNAME=admin" in env
@@ -198,5 +203,24 @@ def test_live_config_keeps_write_specs_out_by_default():
     config = (ROOT / "frontend" / "playwright.live.config.ts").read_text(encoding="utf-8")
     assert "KTDM_LIVE_E2E_WRITE === '1' ? [] : ['**/*.write.live.spec.ts']" in config
     assert "trace: 'off'" in config
+    assert "globalSetup: './e2e-live/login-preflight.ts'" in config
+    assert "serviceWorkers: 'block'" in config
+    fixtures = (ROOT / "frontend" / "e2e-live" / "live-fixtures.ts").read_text(encoding="utf-8")
+    assert "context.route('**/*'" in fixtures  # 새 탭·popup도 같은 변경 차단
+    for spec in (ROOT / "frontend" / "e2e-live").glob("*.live.spec.ts"):
+        assert "from './live-fixtures'" in spec.read_text(encoding="utf-8"), spec.name
     default = (ROOT / "frontend" / "playwright.config.ts").read_text(encoding="utf-8")
     assert "testDir: './e2e'" in default  # CI 격리 회귀는 e2e-live를 수집하지 않는다
+
+
+def test_symlinked_parent_and_missing_docker_are_refused(box):
+    box["cred"].write_text(VALID, encoding="utf-8")
+    linked = box["root"] / "linked"
+    os.symlink(box["cred"].parent, linked)
+    via_link = _run(box, env={"KTDM_LIVE_E2E_CREDENTIALS": str(linked / "ktdm-e2e.env")})
+    assert via_link.returncode == 3
+    assert "심볼릭 링크" in via_link.stderr
+    no_docker = _run(box, env={"KTDM_LIVE_E2E_DOCKER": str(box["root"] / "no-docker")})
+    assert no_docker.returncode == 2
+    assert "docker 실행 파일이 없습니다" in no_docker.stderr
+    assert not box["args"].exists()
