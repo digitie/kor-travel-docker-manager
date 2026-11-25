@@ -14,7 +14,9 @@ API는 `ktdm-backend`로 운영하며, 이 소비자 변경에는 backend 코드
 Manager UI 전용 Dockerfile·이미지 태그는 현재 저장소에 없다. 임의로 Docker 배포 경로를 만들지 않는다.
 2026-11-12 실제 frontend 유닛이 loaded/active이며 trusted-release 링크가 존재함을 읽기 전용으로 확인했다.
 실행 계정·경로·환경 파일의 실제 값은 저장소 밖 권한0600 로컬 기록에만 보존했다.
-부모가 머지 SHA와 당시 운영 컨텍스트를 다시 확인한 뒤 기존 UI만 재빌드·재시작한다.
+부모가 머지 SHA와 당시 운영 컨텍스트를 다시 확인한 뒤 기존 UI만 교체·재시작한다.
+빌드는 운영 박스가 아니라 Windows 개발 장비 WSL에서 한다(소유자 결정 2026-11-24, ADR-67과 같은 원칙).
+절차의 정본은 `docs/prod-deployment.md` §4다.
 DB·RustFS·다른 target의 시작/정지/재구축·마이그레이션은 실행하지 않는다.
 
 ## 승인 후 실행 순서
@@ -23,20 +25,24 @@ DB·RustFS·다른 target의 시작/정지/재구축·마이그레이션은 실�
    현재 소스 revision·이전 빌드 복구 경로를 읽기 전용으로 확인한다.
 2. 운영 `.env`·`frontend/.env.production`·로컬 override·설정 파일은 보존한다.
    추적 파일만 exact SHA로 갱신하고 운영 비밀을 로컬 테스트 환경으로 복사하지 않는다.
-3. 운영 frontend 디렉터리에서 `npm ci`, `npm run check:dependencies`,
-   `npm run type-check`, `npm run lint -- --max-warnings=0`, `npm run doctor`, `npm run test`를 확인한다.
+3. WSL에서 exact SHA의 `frontend`만 `git archive`로 빈 작업 디렉터리에 풀고, Docker `node:26.13.1`·npm 12.0.1
+   컨테이너에서 `npm ci`, `npm run check:dependencies`, `npm run type-check`, `npm run lint -- --max-warnings=0`,
+   `npm run doctor`, `npm run test`를 확인한다. 운영 박스에서는 `npm ci`·빌드를 하지 않는다.
    공통 vendor tgz·원장·lock의 SHA512가 승인한 후보와 같아야 한다.
-4. 운영 `NEXT_PUBLIC_BACKEND_URL`을 출력하지 않고 유지한 채 `npm run build`한다.
-   해당 값은 번들에 들어가므로 WSL 검증용 번들을 운영에 그대로 복사하지 않는다.
-5. 빌드 성공 뒤 `sudo systemctl restart ktdm-frontend`만 실행한다.
+4. 운영 `frontend/.env.production`을 출력하지 않고 작업 디렉터리에 0600 사본으로 둔 채 같은 컨테이너에서
+   `npm run build`(`next build`)하고, 빌드 직후 사본을 지운다. `NEXT_PUBLIC_BACKEND_URL`은 번들에 들어가므로
+   개발 env로 만든 WSL 검증용 번들을 운영에 옮기지 않는다. 빌드한 디렉터리를 tar로 옮겨 양쪽 sha256 manifest가
+   같은지 보고, 기존 디렉터리를 `.previous-<이전 SHA>-<시각>`으로 보존한 뒤 교체한다(env 파일은 기존 것을 유지).
+5. 교체 뒤 운영 박스 IO 정체 검사가 0일 때 `sudo systemctl restart ktdm-frontend`만 실행하고,
+   무인증 `http://127.0.0.1:12905/` 200과 `.next/BUILD_ID`가 빌드한 값과 같은지 확인한다.
    UI 변경만으로 trusted backend installer나 Compose mutation을 실행하지 않는다.
    backend 설치가 필요해지면 별도 범위를 확인하고 §3의 exact SHA installer 경로를 따른다.
 6. API `/health`, UI의 정상 HTTP 응답, 공개 도메인의 로그인→서비스 원장→
    중지 항목 토글·상세 탭·빠른 명령→로그아웃→로그인 화면 전환을 확인한다.
    브라우저 콘솔 오류·인증 재연결 루프·로그아웃 뒤 보호 읽기 재개가 없어야 한다.
    검증을 위해 실제 컨테이너 중지나 설정 변경을 실행하지 않는다.
-7. 실패하면 원인을 기록하고 운영 비밀을 보존한 기존 frontend 복구 경로로 이전 SHA를
-   재빌드·재시작한다. DB·RustFS 또는 자동 이미지 rollback을 사용하지 않는다.
+7. 실패하면 원인을 기록하고 보존한 `.previous-<이전 SHA>-<시각>` 디렉터리를 원래 자리로 되돌린 뒤
+   `ktdm-frontend`를 재시작한다(다시 빌드하지 않는다). DB·RustFS 또는 자동 이미지 rollback을 사용하지 않는다.
 
 ## 현재 검증과 운영 수용의 구분
 

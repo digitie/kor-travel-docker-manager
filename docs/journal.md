@@ -1,3 +1,17 @@
+## 2026-11-25 — frontend 배포 문서를 WSL 빌드·디렉터리 교체 절차로 고침(운영 박스 빌드 금지)
+
+- 출처: 소유자 결정(2026-11-24) — 이미지·frontend 빌드는 Windows 개발 장비 WSL에서만, n150·odroid는 받기만 한다(ADR-67과 같은
+  원칙). 그런데 `prod-deployment.md` §4·`common-ui-deployment.md`가 여전히 "운영 호스트에서 `npm ci`·`npm run build`"를 안내했다.
+- 고침: `prod-deployment.md` §4를 2026-11-25 n150 실제 배포 절차로 다시 썼다 — `git archive`로 frontend만 풀기 → Docker
+  `node:26.13.1`·npm 12.0.1에서 `npm ci`·`check:dependencies`·`next build`(운영 `.env.production`을 출력 없이 0600 사본으로, 빌드
+  직후 삭제) → tar 운반·양쪽 sha256 manifest 대조 → 기존 디렉터리를 `.previous-<SHA>-<시각>`으로 보존하고 교체 → io-guard 0일 때
+  `systemctl restart ktdm-frontend` → 무인증 200·`BUILD_ID` 확인. 되돌리기는 디렉터리 원복 + restart. §2의 frontend 소스 rsync 예,
+  §2 odroid "앱 이미지 현지 빌드", `common-ui-deployment.md` 3~5·7단계, `dev-environment.md`·`frontend-toolchain.md`의 운영 호스트 빌드
+  문구도 같이 고쳤다. ADR-58 결정 9에 "현지 빌드는 ADR-67로 대체" 표시, ADR-67 후속에 frontend 항목(done)을 넣었다.
+- 남은 것(문서 밖): `scripts/verify-frontend-toolchain.sh` 머리 주석이 "배포 호스트에서 실행"을 전제한다. concierge UI의 compose 기본
+  `KOR_TRAVEL_CONCIERGE_UI_START_MODE=build`는 컨테이너 시작 때 운영 박스에서 `next build`한다(§7 — `prebuilt`가 원칙에 맞는 길).
+  둘 다 코드 변경이라 이 문서 PR에서 다루지 않았다.
+
 ## 2026-11-25 — 운영 대시보드 live e2e를 n150에서 root 자격 파일로 실행
 
 - 출처: 소유자 결정(2026-11-25) — 로그인이 필요한 화면도 운영 배포 뒤 n150 live e2e로 자동 확인한다. PinVi admin live e2e의
