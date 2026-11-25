@@ -960,8 +960,9 @@ PinVi ETL `pinvi_email_outbox`는 `app.email_queue` 집계만 한다. 그래서 
 - **켜기**: root `.env`에 값 → Manager 설치 → compose에서 `pinvi-api`를 다시 만드는 경로로 적용(7.5a와 같은 이유로
   `service-release apply-core-candidate pinvi`는 실행 중 env를 보존하므로 새 이름이 들어가지 않는다) → 컨테이너 env에 이름이
   있는지(값은 출력하지 않는다)와 기동 로그에 `pinvi.email.config_warning`이 없는지 확인.
-  - **env와 PinVi 이미지는 한 번의 재생성으로 함께** 적용한다. PinVi #801 이후 Resend 401·403은 재시도 없이 바로 failed라, 둘 사이
-    공백에 쌓인 메일은 관리자 재발송 대상이 된다(재발송 때 링크는 현재 origin으로 다시 만들어진다).
+  - **env와 PinVi 이미지는 한 번의 재생성으로 함께** 적용한다. PinVi #801 이후 Resend 401·403은 맞은 메일 1통만 바로 failed로 닫고
+    프로세스 단위로 900초 발송을 멈춘다(정지가 풀릴 때마다 1통씩 더 failed). 나머지는 pending으로 남아 설정을 고친 재생성 뒤 그대로
+    나가고, failed로 닫힌 메일은 관리자 재발송 대상이다(재발송 때 링크는 현재 origin으로 다시 만들어진다).
   - compose 재생성은 메일 env만이 아니라 candidate 경로가 보존해 온 실행 중 env와 root `.env`의 차이 **전부**를 함께 적용한다.
     재생성 전에 실행 중 컨테이너와 렌더 결과(`docker compose config pinvi-api`)의 env 이름 집합과 값 sha256을 비교해 메일 env 밖의
     차이가 없는지(있으면 그 차이가 의도인지 — 7.5a의 planner 키처럼 다른 서비스와 짝인 값) 확인하고, 이미지가 의도한 PinVi
