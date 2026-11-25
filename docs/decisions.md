@@ -1438,7 +1438,8 @@ cutover는 root 환경을 별도 파싱하지 않고 기존 frozen/resolved moun
    프로세스(OS·보존 서비스·Manager)만 흡수하는 **호스트 OOM 전 완충**이다. (ⅶ) geo 백업·restore drill은 odroid에서 **off**(재로드
    원칙과 일치; drill 2 h+/일 회피), weather 백업 role은 추가하지 않는다(S14), transport 3일 백업은 odroid cron으로 옮기는 것을
    추천(**§14-7 소유자 결정 전 추천값** — 대안 "아무것도 안 함").
-9. **ARM64 이미지 — odroid 현지 빌드, 레지스트리 없음, 내용 해시 태그에 arch 없음.** 호스트는 실측 aarch64이므로 arm64는 조건부가
+9. **ARM64 이미지 — odroid 현지 빌드, 레지스트리 없음, 내용 해시 태그에 arch 없음.** (**"현지 빌드"는 2026-11-24 소유자
+   결정·ADR-67로 대체**: 운영 박스 빌드 금지 — WSL에서 arm64로 교차 빌드해 tar로 옮긴다. 레지스트리 없음·태그 규칙은 그대로.) 호스트는 실측 aarch64이므로 arm64는 조건부가
    아니라 필수다. n150에 binfmt가 없어 QEMU 교차 빌드는 쓰지 않고, 레지스트리는 호스트가 셋 이상일 때 재검토. 태그 규칙은
    n150과 동일(`latest-main`·`rel-<sha>`·내용 해시) — 두 호스트가 **같은 tag로 다른 arch 내용**을 갖는다. 이것은 **레지스트리가
    없을 때만 안전**하므로 레지스트리 도입의 선결 조건으로 기록한다. 기존 digest 핀은 제거하지 않고 odroid는 root `.env`·태그
@@ -2113,6 +2114,9 @@ concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째
 
 - (open) n150·odroid에 `fc52552976c61b10` 운반·converge(n150 부모, odroid Codex).
 - (open) 다른 Manager 소유 이미지(compose `build:`가 있는 서비스)도 같은 운반 경로로 옮길지.
+- (done 2026-11-25) Manager frontend(systemd `ktdm-frontend`)도 같은 원칙이다 — WSL Docker `node:26.13.1`에서 운영
+  `.env.production`으로 `next build`한 디렉터리를 tar·sha256 manifest 대조로 옮겨 교체한다. 2026-11-25 n150 배포가 이 절차였고
+  `prod-deployment.md` §4·`common-ui-deployment.md`의 운영 호스트 `npm run build` 안내를 고쳤다.
 
 ## ADR-68: 공용 Dagster role 연결 한도는 설정 키(기본 60)이고 수집 경보가 그 비율을 본다
 

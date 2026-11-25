@@ -28,17 +28,18 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
   ```bash
   rsync -az backend/src/ \
     <user>@<prod-host>:~/kor-travel-docker-manager/backend/src/
-  rsync -az frontend/src/ \
-    <user>@<prod-host>:~/kor-travel-docker-manager/frontend/src/
   ```
+  frontend는 소스를 옮겨 운영 박스에서 빌드하지 않는다 — WSL에서 빌드한 디렉터리를 옮긴다(§4, ADR-67).
 - **git clone** 후 운영 호스트의 추적 파일을 갱신하고 `.env` / `frontend/.env.production`을
   별도로 안전하게 준비한다. `--delete`와 저장소 루트 전체 동기화는 사용하지 않는다. 신규
   설치는 아래 trusted installer를 우선하고, 이 rsync 절차는 기존 rsync 배포본을 갱신할 때만 쓴다.
 
 **두 번째 호스트 odroid(ADR-58 accepted — 설치 완료, 2026-10-17 NH-6 #524).** odroid(`192.168.1.13`, aarch64)에도 같은 절차로 root clone + trusted
 installer를 쓴다. 다른 점은 셋이다: (1) wheelhouse는 n150 사본을 옮기지 않고 **odroid 현지에서 root 소유로 발행**한다(amd64 wheel은
-쓸 수 없다, §3.1); (2) 앱 이미지는 **odroid 현지 빌드**다(n150에 binfmt가 없어 교차 빌드하지 않고, 레지스트리도 두지 않는다 —
-같은 tag가 호스트마다 다른 arch 내용을 갖는다); (3) 설치 **전제**로 `docker compose` v2 플러그인과 buildx가 있어야 한다 —
+쓸 수 없다, §3.1); (2) 이미지는 arm64이고 레지스트리를 두지 않는다(같은 tag가 호스트마다
+다른 arch 내용을 갖는다). 처음에는 odroid 현지 빌드였으나 **2026-11-24 소유자 결정으로 운영 박스 빌드는 금지**다 — Windows
+개발 장비 WSL에서 arm64로 교차 빌드해 tar로 옮긴다(dagster-host는 ADR-67 `scripts/dagster_host_image.py`, compose `build:`가 있는
+그 밖의 이미지 운반 경로는 ADR-67 후속); (3) 설치 **전제**로 `docker compose` v2 플러그인과 buildx가 있어야 한다 —
 2026-10-13 실측 odroid에는 둘 다 없다(python docker-compose 1.29.2만; Manager는 `docker compose` subprocess를 전제한다). 전체 초기화
 순서와 플립 절차는 §9.
 
@@ -710,14 +711,49 @@ sudo rm -rf /run/lock/kor-travel-docker-manager   # 진행 중인 mutation이 �
 
 ## 4. 프론트엔드 (Next.js, :12905)
 
-```bash
-cd <프론트엔드 배포 디렉터리>
-npm ci
-npm run build      # .env.production 의 NEXT_PUBLIC_BACKEND_URL 이 번들에 인라인됨
-sudo systemctl restart ktdm-frontend
-```
+**운영 박스(n150·odroid)에서는 `npm ci`·`next build`를 하지 않는다**(소유자 결정 2026-11-24, ADR-67과 같은 원칙).
+빌드는 Windows 개발 장비의 WSL에서 고정 Node 컨테이너로 하고, 운영 박스는 완성된 frontend 디렉터리(`.next`·
+`node_modules` 포함)를 받아 디렉터리째 바꾸고 재기동만 한다. 운영 박스의 디스크 대기·CPU·npm registry 접근을 쓰지 않게
+하려는 것이다. 아래는 2026-11-25 n150 배포에서 실제로 쓴 절차다.
 
-`NEXT_PUBLIC_*`은 빌드 타임에 인라인되므로 운영 호스트에서 빌드해야 운영 API 주소가 반영된다.
+`NEXT_PUBLIC_*`(`NEXT_PUBLIC_BACKEND_URL` 등)은 빌드 타임에 번들로 인라인된다. 그래서 WSL 빌드에는 **운영**
+`frontend/.env.production`이 있어야 하고, 개발용 env로 만든 번들(로컬 검증 빌드)을 운영에 옮기지 않는다.
+
+1. **소스 고정(WSL).** 머지된 40자리 SHA에서 frontend만 빈 작업 디렉터리로 푼다. working tree의 미추적 파일이나
+   `.env.local`(`.env.production`을 덮어쓴다)이 섞이지 않게 `git archive`를 쓴다.
+   ```bash
+   git archive <SHA> frontend | tar -x -C <작업 디렉터리>
+   ```
+2. **운영 env 사본(WSL).** 운영 박스의 `frontend/.env.production`을 화면에 출력하지 않고 작업 디렉터리에 0600 사본으로
+   가져온다(예: `umask 077` 뒤 ssh로 받아 파일로 리다이렉트). 값을 로그·터미널에 내지 않는다.
+3. **빌드(WSL Docker).** `frontend/package.json`의 `engines`와 같은 Node `26.13.1`·npm `12.0.1`에서 한다
+   (`.npmrc`가 engine-strict라 패치 버전이 달라도 `npm ci`가 실패한다).
+   ```bash
+   docker run --rm -v <작업 디렉터리>/frontend:/app -w /app node:26.13.1 bash -c '
+     npm install --global npm@12.0.1 &&
+     npm ci --engine-strict &&
+     npm run check:dependencies &&
+     npm run build'          # = next build
+   ```
+   빌드가 끝나면 **바로 env 사본을 지운다**. 아래 tar에도 env 파일을 넣지 않는다.
+   운영 박스와 CPU arch가 같아야 한다(n150은 amd64 — `node_modules`의 native 부품이 arch를 탄다).
+4. **운반과 대조.** 빌드한 `frontend` 디렉터리를 tar로 묶어 운영 박스로 옮긴다. 개발 장비에서 tar의 SHA-256과
+   파일별 sha256 manifest(`find frontend -type f -print0 | sort -z | xargs -0 sha256sum`)를 만들고, 운영 박스에서 새
+   staging 디렉터리에 푼 뒤 같은 manifest를 다시 만들어 **양쪽이 같을 때만** 다음으로 간다. `.next/BUILD_ID`도 기록해 둔다.
+   staging은 frontend 유닛 계정(`KTDM_FRONTEND_SERVICE_USER`)으로 풀어 그 계정 소유가 되게 한다.
+5. **교체.** 기존 frontend 디렉터리의 env 파일(`.env.production` 등)을 staging에 그대로 옮겨 둔 뒤, 기존 디렉터리를
+   `<frontend 디렉터리>.previous-<이전 SHA>-<시각>`으로 이름만 바꿔 **보존**하고 staging을 `<frontend 디렉터리>`
+   (`KTDM_FRONTEND_APP_DIR`) 자리로 옮긴다. 도는 프로세스는 재기동 전까지 옛 디렉터리를 계속 쓴다.
+6. **재기동.** 운영 박스의 IO 정체 검사(io-guard)가 0일 때만 `sudo systemctl restart ktdm-frontend`.
+7. **확인.** `systemctl is-active ktdm-frontend`, 무인증 `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12905/`
+   = 200(로그인 화면), 운영 디렉터리의 `.next/BUILD_ID`가 4에서 기록한 값과 같은지 본다. 그다음 §6의 브라우저 확인.
+
+**되돌리기**: 바꾼 디렉터리를 옆으로 치우고 `.previous-<이전 SHA>-<시각>`을 `<frontend 디렉터리>` 자리로 되돌린 뒤
+`sudo systemctl restart ktdm-frontend`, 같은 확인. 다시 빌드하지 않는다.
+
+frontend 소스(`frontend/`)가 이전 배포와 바이트가 같으면 빌드·교체하지 않고 기존 빌드를 그대로 쓴다. 운영 박스에서
+`npm run start`를 돌리는 Node·npm은 유닛의 `KTDM_FRONTEND_NPM`이 정한다 — 빌드 runtime과의 정렬은
+[`frontend-toolchain.md`](frontend-toolchain.md).
 
 프론트엔드 유닛은 계정명·경로가 host 민감 정보라 템플릿
 (`deploy/systemd/ktdm-frontend.service.template`)이며, installer가 root 소유 `.env`의

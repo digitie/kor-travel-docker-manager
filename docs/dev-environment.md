@@ -164,7 +164,7 @@ npm run dev
 | 백엔드 CORS 허용 Origin | 루트 `.env` | `KTDM_CORS_ALLOW_ORIGINS` | 대시보드 공개 Origin. 콤마로 여러 개. 미설정/`*`이면 localhost 두 Origin만 허용 |
 
 - 계약(placeholder)은 `frontend/.env.example`, 루트 `.env.example`에 문서화되어 있다. 실제 도메인은 채워 넣지 않는다.
-- `NEXT_PUBLIC_*`은 **빌드 타임에 번들로 인라인**되므로 운영 호스트에서 `npm run build`를 다시 수행해야 주소가 반영된다.
+- `NEXT_PUBLIC_*`은 **빌드 타임에 번들로 인라인**되므로 운영 `frontend/.env.production`으로 빌드해야 주소가 반영된다. 빌드는 운영 호스트가 아니라 개발 장비 WSL의 Docker Node 컨테이너에서 하고, 완성된 디렉터리를 운영 호스트로 옮긴다(운영 호스트 빌드 금지 — 소유자 결정 2026-11-24·ADR-67, 절차는 `prod-deployment.md` §4).
 - **Next.js 환경파일 우선순위 주의**: `.env.local`이 `.env.production`을 덮어쓴다. 개발 기본값은 `frontend/.env.development`(localhost), 운영 값은 `frontend/.env.production`에 두고, `.env.local`에는 `NEXT_PUBLIC_BACKEND_URL`을 두지 않는다.
 - 백엔드는 기동 시 루트 `.env`(또는 `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 경로)를 로드해 `KTDM_CORS_ALLOW_ORIGINS`를 적용한다. 개발에서는 미설정이면 `http://localhost:12905`와 `http://127.0.0.1:12905`만 허용한다.
 
