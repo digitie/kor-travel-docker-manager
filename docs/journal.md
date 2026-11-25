@@ -9,6 +9,10 @@
 - 시험: `backend/tests/test_transport_post_deploy_warm.py`(승인 blob 실행·작업 트리 변조 무시, 로컬 Docker 고정·부모 env 비상속,
   exit 2/기타, 프로세스 그룹 timeout, 스크립트 부재, env 미독 시 본문 보류, 실제 config의 project·port 유도, CLI의 성공 confirm만
   호출·dry-run/실패 미호출·skip). 운영 호스트 실행은 하지 않았다.
+- 적대적 리뷰(James 운영·Popper 실패 모드) 반영: warm 중 SIGTERM·SIGHUP·Ctrl-C와 warm 안 예외가 배포 JSON·exit code를 잃게 하던
+  경로를 막고, GNU `timeout`의 별도 process group까지 session 단위로 죽이며, 가림 전 잘린 줄 버림·env 파일 부재 fail-closed·
+  `IP:HOST:CONTAINER` 포트·시작/요약 stderr 줄·skip 플래그 transport 한정을 더했다. instigator STOPPED 중 실행(Transport 런북과의
+  시점 차이)은 요청대로 기본 자동을 유지하고 문서·skip으로 남겼다 — Transport 런북 갱신은 후속.
 
 ## 2026-11-25 — frontend 배포 문서를 WSL 빌드·디렉터리 교체 절차로 고침(운영 박스 빌드 금지)
 

@@ -12,6 +12,7 @@ from kor_travel_docker_manager.services import service_release_core_candidate as
 from kor_travel_docker_manager.services.registry import load_targets_config
 
 SECRET = "fixture-warm-secret-value"
+ORIGINAL_WARM_SECRETS = core._warm_secrets
 
 
 def git(path, *args):
@@ -87,7 +88,7 @@ def test_runs_approved_blob_with_local_docker_and_records_warnings(clone):
     assert f"docker={persistent.LOCAL_DOCKER_HOST} context=none token=none" in result["stdout"]
     assert result["warning_count"] == 2 and result["clean"] is False
     assert result["warnings"][1] == "post-deploy-warm: WARN backend is not running"
-    assert SECRET not in repr(result) and result["output_redacted"] is True
+    assert SECRET not in repr(result) and result["output_withheld"] is False
 
 
 def test_parent_docker_and_secret_environment_is_not_inherited(clone, monkeypatch):
@@ -109,10 +110,13 @@ def test_nonzero_exit_is_recorded_not_raised(clone, code, status):
     assert result["status"] == status and result["exit_code"] == code and result["clean"] is False
 
 
-def test_timeout_kills_the_whole_process_group(clone, tmp_path):
+def test_timeout_kills_the_whole_session_including_gnu_timeout_groups(clone, tmp_path):
     source, commit = clone
     marker = tmp_path / "child-survived"
-    sha = commit(f"(sleep 3; touch {marker}) &\nsleep 30\n")
+    # GNU timeout은 자기 process group을 따로 만든다(스크립트의 docker exec 경로와 같은 모양).
+    sha = commit(
+        f"timeout 60 bash -c 'sleep 3; touch {marker}' &\n(sleep 3; touch {marker}) &\nsleep 30\n"
+    )
     started = time.monotonic()
     result = _warm(source, sha, timeout=1)
     assert result["status"] == "timeout" and time.monotonic() - started < 10
@@ -136,8 +140,34 @@ def test_unreadable_env_withholds_output_but_keeps_warning_count(clone, monkeypa
     sha = commit(f"echo 'post-deploy-warm: WARN {SECRET}' >&2\n")
     result = _warm(source, sha)
     assert result["warning_count"] == 1 and result["warnings"] == []
-    assert result["output_redacted"] is False and result["clean"] is False
+    assert result["output_withheld"] is True and result["stdout"] is None and result["clean"] is False
     assert SECRET not in repr(result)
+
+
+def test_ip_bound_port_declaration_uses_host_port():
+    config = _config()
+    config["containers"]["kor-travel-transport-backend"]["expected_ports"] = ["127.0.0.1:12302:8000"]
+    assert core._transport_backend_api_port(config, "kor-travel-transport") == 12302
+
+
+def test_sigterm_during_warm_is_recorded_as_interrupted(clone):
+    source, commit = clone
+    sha = commit("kill -TERM $PPID\nsleep 30\n")
+    started = time.monotonic()
+    result = _warm(source, sha)
+    assert result["status"] == "interrupted" and time.monotonic() - started < 10
+
+
+def test_malformed_config_and_missing_env_never_raise(clone, monkeypatch):
+    source, commit = clone
+    sha = commit("echo out\n")
+    config = _config()
+    config["containers"]["broken"] = "not-a-mapping"
+    assert core.post_deploy_warm(source_clone=source, source_sha=sha, root=source.parent,
+                                 config=config)["status"] == "completed"
+    monkeypatch.setattr(core.release, "read_current_release",
+                        lambda service, root: {"groups": {"core": {"env_file": "/nonexistent/.env"}}})
+    assert ORIGINAL_WARM_SECRETS(source.parent) is None
 
 
 def test_bad_port_declaration_is_error_not_exception(clone):
@@ -194,6 +224,24 @@ def test_cli_does_not_warm_failed_or_planned(cli, capsys, apply):
     extra = "--confirm" if apply["result"] == "failed" else "--dry-run"
     entry._run(_args(extra))
     assert cli["warm"] == [] and "post_deploy_warm" not in capsys.readouterr().out
+
+
+def test_cli_records_warm_crash_without_changing_exit(cli, capsys, monkeypatch):
+    def boom(**kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(core, "post_deploy_warm", boom)
+    assert entry._run(_args("--confirm")) == 0
+    out = capsys.readouterr()
+    assert '"success": true' in out.out and '"error_type": "KeyboardInterrupt"' in out.out
+    assert "published; running best-effort warm" in out.err
+
+
+def test_cli_rejects_skip_flag_for_other_services(cli, capsys):
+    args = _args("--confirm", "--skip-post-deploy-warm")
+    args.service = "weather"
+    assert entry._run(args) == 2
+    assert "transport에만" in capsys.readouterr().out
 
 
 def test_cli_operator_can_skip_warm(cli, capsys):

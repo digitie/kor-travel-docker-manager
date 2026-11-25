@@ -184,6 +184,8 @@ def _run(args: argparse.Namespace) -> int:
         declaration = _declaration(args.service, config)
         root = Path(args.root)
         if args.release_action == 'apply-core-candidate':
+            if args.skip_post_deploy_warm and args.service != 'transport':
+                raise ServiceReleaseError('--skip-post-deploy-warm은 transport에만 쓸 수 있습니다')
             from kor_travel_docker_manager.services.service_release_core_candidate import (
                 apply_transport_core_candidate,
             )
@@ -215,15 +217,24 @@ def _run(args: argparse.Namespace) -> int:
                 if args.skip_post_deploy_warm:
                     payload['post_deploy_warm'] = {'status': 'skipped', 'reason': 'operator'}
                 else:
-                    from kor_travel_docker_manager.services.service_release_core_candidate import (
-                        post_deploy_warm,
-                    )
-                    payload['post_deploy_warm'] = post_deploy_warm(
-                        source_clone=Path(args.source_clone), source_sha=args.source_sha,
-                        root=root, config=config,
-                    )
-                    for line in payload['post_deploy_warm'].get('warnings', []):
+                    print('post-deploy-warm: Transport core published; running best-effort warm '
+                          '(<=600s; it never changes the deploy result, Ctrl-C stops only the warm)',
+                          file=sys.stderr, flush=True)
+                    try:
+                        from kor_travel_docker_manager.services.service_release_core_candidate import (
+                            post_deploy_warm,
+                        )
+                        warm = post_deploy_warm(
+                            source_clone=Path(args.source_clone), source_sha=args.source_sha,
+                            root=root, config=config,
+                        )
+                    except BaseException as exc:  # noqa: BLE001 - 발행된 배포 결과를 잃지 않는다.
+                        warm = {'status': 'error', 'error_type': type(exc).__name__, 'clean': False}
+                    payload['post_deploy_warm'] = warm
+                    for line in warm.get('warnings', []):
                         print(line, file=sys.stderr)
+                    print(f"post-deploy-warm: {warm.get('status')} clean={warm.get('clean')} "
+                          f"warnings={warm.get('warning_count', 0)}", file=sys.stderr, flush=True)
         elif args.release_action == 'apply-candidate':
             from kor_travel_docker_manager.services.service_release_candidate import (
                 apply_ui_candidate,
