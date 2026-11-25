@@ -288,14 +288,16 @@ if len(pg) != 1: sys.exit("expected one shared gateway, got %s" % pg)
 print("PLANE_DAEMON=%s" % pd[0])
 print("PLANE_WEBSERVER=%s" % pw[0])
 print("PLANE_GATEWAY=%s" % pg[0])
-# 공용 instance의 role·DB를 만드는 one-shot — 공용 role 사용자 env를 싣고 CONNECTION LIMIT을 거는 활성 서비스.
+# 공용 instance의 role·DB를 만드는 one-shot — 공용 role 사용자·연결 한도 env를 싣고 CONNECTION LIMIT을 거는 활성 서비스.
+# 한도는 그 env의 렌더 값이다(root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`, 비우면 compose 기본값).
 dbi = [n for n, s in active.items() if "KOR_TRAVEL_DAGSTER_SHARED_APP_USER" in (s.get("environment") or {})
+       and "KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT" in (s.get("environment") or {})
        and "CONNECTION LIMIT" in " ".join(words(s))]
 if len(dbi) != 1: sys.exit("expected one shared db-init one-shot, got %s" % dbi)
-limits = sorted(set(re.findall(r"CONNECTION LIMIT ([0-9]+)", " ".join(words(active[dbi[0]])))))
-if len(limits) != 1: sys.exit("the shared db-init sets no single CONNECTION LIMIT: %s" % limits)
+limit = str(active[dbi[0]]["environment"]["KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT"])
+if not re.fullmatch(r"[1-9][0-9]{0,4}", limit): sys.exit("the shared db-init connection limit is not a positive integer: %r" % limit)
 print("PLANE_DB_INIT=%s" % dbi[0])
-print("PLANE_ROLE_CONNECTION_LIMIT=%s" % limits[0])
+print("PLANE_ROLE_CONNECTION_LIMIT=%s" % limit)
 '
 fact() { sed -n "s/^$1=//p" <<<"$2"; }
 

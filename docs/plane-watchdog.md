@@ -36,6 +36,7 @@ healthcheck는 healthy였다(평소 fd 13~24개).
 | `disk_usage` | 사용률(df Capacity 식) | statvfs: `/`, Docker root, 공용 PG 데이터 mount |
 | `io_pressure` | PSI `io full avg300`이 `for_evaluations`회 연속 임계 이상 | `/proc/pressure/io`(없으면 "확인 불가") |
 | `dagster_fd_usage` | Dagster 컨테이너 안 **프로세스별** 열린 fd / 그 pid의 nofile soft 한도의 최댓값 | `/proc/<pid>/fd`·`limits`(호스트 PID는 `docker top`) |
+| `dagster_role_connections` | 공용 Dagster role의 client 연결 수 / 그 role의 `CONNECTION LIMIT`이 최근 `for_evaluations`회 연속 임계 이상(§3.3) | `pg_stat_activity`·`pg_roles`(storage DB owner) |
 
 세부 규칙:
 
@@ -89,6 +90,31 @@ transport #283(`8041dfd`)은 공항 수집 op가 수집·사전집계 갱신 뒤
 - 상태의 기준(분·시간)은 transport `app/services/analytics_cache.py`가 정본이라 Manager 코드·설정에는 다시 적지 않는다(위 문단의 값은
   #283 당시 인용).
 
+### 3.3 공용 Dagster role 연결 수(`dagster_role_connections`, 소유자 결정 2026-11-25)
+
+공용 role `kor_travel_dagster_shared_app` 하나를 daemon·webserver·run worker·임시 start_run instance가 함께 쓴다. 한도(db-init 기본 60,
+[daemon-pool-adoption.md](daemon-pool-adoption.md) "접속 예산")에 닿으면 새 접속이 `too many connections for role`로 거절되고 그때
+접속하던 run worker의 run이 실패한다 — Common py dev2 뒤 바쁜 시간 동시 최악이 옛 한도 45에 닿았던 것이 이 규칙의 계기다.
+
+- **자료**: storage DB(`dagster_shared`)에 붙은 그 질의 하나 — DB owner role(= 공용 role; db-init이 owner를 확인한다)의
+  `rolconnlimit`, `pg_stat_activity`에서 그 role의 `backend_type = 'client backend'` 수(PostgreSQL이 한도에 세는 것은 일반 client
+  연결뿐이다), instance 전체 client 연결 수, `max_connections`·`superuser_reserved_connections`·`reserved_connections`. role 이름을
+  설정에 다시 적지 않는다(owner에서 유도, 세션은 OID로 맞춘다). owner가 superuser면(복원·수동 변경) 한도가 걸리지 않는 role이라
+  "확인 불가"다. 2026-11-25 실측 n150 345 ms(디스크 대기 중)·odroid 136 ms.
+- **판정**: 비율 = 연결 수 / 한도(한도가 -1이면 instance 비-superuser 자리). 최근 `for_evaluations`회 관측이 **모두** `warning_ratio`
+  이상이면 주의, 모두 `critical_ratio` 이상이면 위험 — 심각도는 그 관측들 가운데 가장 낮은 비율로 정한다(한 번 튄 값으로 위험이 되지
+  않는다). 한도가 0이면(모든 새 접속 거절) 연속을 기다리지 않고 바로 위험이다.
+- **해소도 연속 조건**: 최근 `for_evaluations`회가 **모두** 주의선 밑이어야 풀린다. 그 사이(주의선 근처를 오감, 다시 모으는 중)는
+  판정하지 않은 것으로 보아 경보를 그대로 둔다 — 점검 항목에 `해소 대기(주의선 밑 k/N회 연속)`·`판정 대기(관측 k/N회)`로, 경보가
+  없으면 `주의선 넘음 k/N회 연속`으로 보인다. 주의선을 오가며 firing·resolved가 반복되지 않는다.
+- **측정 실패·기동 직후**: 이 질의가 실패하거나 이번 평가에서 storage에 닿지 못했으면(그때는 같은 PG에 이 질의를 더 얹지 않는다) 이
+  규칙만 "확인 불가"이고 경보는 유지된다. 연속 관측은 처음부터 다시 센다 — 끊긴 관측을 잇지 않는다. 다시 모으는 동안과 Manager 재시작
+  직후에는 해소를 내지 않는다(높은 값이 "정상"으로 읽혀 `[해소]`가 나가고, 이어 다시 울린 위험이 Telegram 반복 억제 360분에 묶이던
+  것을 적대 리뷰가 재현했다).
+- **plane이 없는 호스트**: "해당 없음"(다른 storage 규칙과 같다).
+- **조치**: daemon pool(`KOR_TRAVEL_DAGSTER_DAEMON_POOL_*`)을 줄이거나 root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`을 올린다 —
+  올리기 전에 접속 예산·공용 instance 여유 표를 다시 센다(n150은 유한 한도 합이 이미 자리를 넘는다).
+
 ## 4. storage 질의(읽기 전용)
 
 `docker exec -i --user postgres --env PGAPPNAME=ktdm-plane-watchdog <공용 PG> psql …`로 컨테이너 안 local socket에 붙는다(백업
@@ -101,6 +127,7 @@ primitive와 같은 경로, 비밀번호·DSN을 읽지 않는다). 모든 질�
 | 종료 run 증분(`update_timestamp >= cursor - 5분`) | 매 평가 | `idx_run_range(status, update_timestamp)` + `idx_run_tags_run_idx` | n150 0.3 ms·odroid 12 ms(7분 창) |
 | 종료 run 시작 시 적재(`bootstrap_hours`) | 기동 1회 | 같음 | n150 48시간 239 ms·odroid 48시간 15 s(load 23) |
 | 사전집계 태그(설정한 job 최근 run) | 매 평가 | `idx_run_range`(창 하한) + `idx_run_tags_run_idx` | odroid 51 ms·n150 0.7 ms |
+| 공용 role 연결 수·한도·instance 자리(§3.3) | 매 평가 | 없음(catalog·`pg_stat_activity`) | n150 345 ms·odroid 136 ms(2026-11-25) |
 | 긴 창 schedule의 job 최근 run | 6시간 | `idx_run_tags(key, value)` → `idx_runs_by_job` 역방향 30행 | location 거르기를 EXISTS로 하면 odroid 22.6 s(semi-join) → 바깥 거르기로 바꿈 |
 
 odroid는 CPU 포화로 가벼운 질의도 수 초가 걸린다. `statement_timeout`·`bootstrap_hours`는 그 실측에 맞췄다.
@@ -142,7 +169,9 @@ PinVi·concierge fd 고갈은 재현되지 않아 원인이 미확정이다(가�
 - 로그: firing은 WARNING `PLANE ALERT firing …`, 해소는 INFO(journald `ktdm-backend`).
 - Prometheus(`/metrics`): `ktdm_plane_alerts_firing{rule,severity}`, `ktdm_plane_watchdog_last_evaluation_timestamp_seconds`,
   `ktdm_dagster_container_open_fds`·`_open_fds_total`·`_nofile_soft_limit{container}`(fd 누수 추적),
-  `ktdm_dagster_location_tick_age_seconds{location}`.
+  `ktdm_dagster_location_tick_age_seconds{location}`, 공용 role 연결 `ktdm_dagster_role_connections`·`_connection_limit`(-1 = 한도 없음)·
+  `_connection_ratio{role}`와 instance 전체 `ktdm_shared_postgres_client_connections`·`ktdm_shared_postgres_connection_capacity`(마지막
+  관측이 실패했거나 plane이 없으면 내지 않는다).
 
 ## 7. 발송 — Telegram(소유자 결정 2026-11-24)
 
@@ -189,7 +218,8 @@ resolved)마다 보낸다.
 PinVi launch 연속 실패(11-13 19:57 발화), PinVi sensor tick 연속 실패(11-14). 공항 통계 사전집계 규칙은 odroid transport 공항 수집 run
 40개(11-24 01:21~07:26Z, 실물 간격)에 시나리오 태그를 덧씌워 재생한다(#283 태그는 추출 시점 배포 전): 한 번 튄 delayed 무시 → delayed
 2회 주의 → stale 1회는 아직 주의 → 태그 없는 FAILURE 건너뜀 → stale 2회 위험 → 태그 없는 SUCCESS로 해소, n150 해당 없음.
-화면은 `frontend/e2e/plane-alerts.spec.ts`.
+공용 role 연결 수 규칙은 n150·odroid instance 모양(자리 97)의 합성 관측열로 연속 조건·주의 → 위험 상승·연속 해소·주의선 근처 깜빡임
+없음·측정 실패와 재시작 뒤 거짓 해소 없음·storage 실패 시 질의 생략·한도 0·지표를 본다. 화면은 `frontend/e2e/plane-alerts.spec.ts`.
 
 ## 9. code-server 자동 재시작(소유자 승인 2026-11-24 — 제한적)
 

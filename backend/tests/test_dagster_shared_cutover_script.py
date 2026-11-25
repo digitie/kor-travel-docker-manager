@@ -137,11 +137,21 @@ def test_the_map_internal_graphql_url_keeps_its_path() -> None:
 
 
 def test_the_script_reads_the_role_connection_limit_from_the_db_init() -> None:
-    """G3-a: 창 스크립트가 live role에 걸 연결 상한은 db-init one-shot의 문장에서 온다(한 값이어야 한다)."""
+    """G3-a: 창 스크립트가 live role에 걸 연결 상한은 db-init one-shot의 연결 한도 env 렌더 값이다(기본 60)."""
 
-    facts = _facts("map", _rendered())
+    document = _rendered()
+    facts = _facts("map", document)
     assert facts["PLANE_DB_INIT"] == "kor-travel-shared-db-init-dagster"
-    assert facts["PLANE_ROLE_CONNECTION_LIMIT"] == "45"
+    assert facts["PLANE_ROLE_CONNECTION_LIMIT"] == "60"
+    # root `.env`가 바꾼 값을 그대로 읽는다.
+    overridden = json.loads(json.dumps(document))
+    environment = overridden["services"]["kor-travel-shared-db-init-dagster"]["environment"]
+    environment["KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT"] = "50"
+    assert _facts("map", overridden)["PLANE_ROLE_CONNECTION_LIMIT"] == "50"
+    # 숫자가 아니면(SQL에 그대로 들어간다) 펜스 전에 멈춘다.
+    environment["KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT"] = "60 SUPERUSER"
+    result = _run_derive("map", overridden)
+    assert result.returncode != 0 and "not a positive integer" in result.stderr
 
 
 # ── 형제 프로젝트(transport): 그 프로젝트의 렌더에서 파생하고 targets의 선언과 대조한다 ──────────────

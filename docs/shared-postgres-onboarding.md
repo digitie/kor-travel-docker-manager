@@ -621,13 +621,13 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
   odroid에서 **`ensure dagster`가 PG·db-init-dagster·storage-migrate·plane을 올린다**. `ensure kor-travel-shared-postgresql` 같은 명령은
   없다. 롤·DB bootstrap은 n150과 같은 one-shot(`kor-travel-shared-db-init-{geo,weather,transport,dagster}`)이 같은 이름으로 만들되
   **실행 시점이 target마다 다르다**(R4 — 생성 명령은 `KTDM_HOST ∈ host 집합`일 때만): `dagster_shared`/`kor_travel_dagster_shared_app`
-  (`CONNECTION LIMIT 45`, compose 리터럴 `docker-compose.yml:726,728`)은 `ensure dagster`(§9.2 전체 순서 3); `kor_travel_geo`/
+  (`CONNECTION LIMIT` — root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`, 기본 60; 2026-11-25까지 리터럴 45)은 `ensure dagster`(§9.2 전체 순서 3); `kor_travel_geo`/
   `kor_travel_geo_app`은 geo 플립의 `ensure geo`(8b — db-init-geo는 geo target의 service `config/docker-targets.yml:439`),
   `kor_travel_weather`/`kor_travel_weather_app`은 weather 플립의 `ensure weather`(6b, `:732`); `kor_travel_transport`/
   `kor_travel_transport_app`은 **어느 target의 service도 등록된 `init_steps`도 아니라**(`docker-compose.yml:588`; n150 합류 때도 Manager
   명령 밖이었다) 설치 루트에서 `docker compose run --rm --no-deps kor-travel-shared-db-init-transport`로 1회(4a′). **앱 role 셋에는
   connlimit이 없다** — db-init의 `CREATE/ALTER ROLE`에 `CONNECTION LIMIT` 절이 없고(`:432-434` 등) n150 실측도 무제한이다(fact base;
-  compose 전체에서 `CONNECTION LIMIT`은 dagster 45뿐). odroid도 같다(두고 싶으면 db-init 셋에 넣는 것이 대안 — T-MGR-03 범위 밖).
+  compose 전체에서 role `CONNECTION LIMIT`은 dagster 하나뿐, 기본 60). odroid도 같다(두고 싶으면 db-init 셋에 넣는 것이 대안 — T-MGR-03 범위 밖).
   **geo 확장은 db-init-geo가 만든다**(T-MGR-03): 원래는 cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고 만들지
   않았지만, odroid는 pg_restore 없는 fresh 경로라 db-init-geo가 끝에 `CREATE SCHEMA IF NOT EXISTS x_extension` +
   `CREATE EXTENSION IF NOT EXISTS {postgis,pg_trgm,unaccent,pg_stat_statements} WITH SCHEMA x_extension` + app role `USAGE`를 한다
@@ -646,7 +646,8 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
   기본값(효과 0, ADR-58 결정 1 ⑦); `shared_buffers 1GB`·`maintenance_work_mem 256MB`·`shm_size 1gb`·`init: true`·exec healthcheck(ADR-52)는
   동일. `max_locks_per_transaction=256`(§6.1 C10)도 env 파생 없이 **두 호스트 같은 리터럴**이다(ADR-58 결정 8 ⅰ).
   **`max_connections`는 compose에 없다(서버 기본 100) — 추가하지 않는다**(실측 사용 ≈17이라 내려도 이득이 없다); connlimit은
-  위 "누가 올리나"대로 `dagster_shared` 45 리터럴뿐이다.
+  위 "누가 올리나"대로 `dagster_shared` role 하나(기본 60)뿐이다. 유한 한도 합과 자리의 비교(n150 115 > 97)는
+  [daemon-pool-adoption.md](daemon-pool-adoption.md) "공용 instance 여유".
 - **메모리 정책(ADR-58 결정 8).** 두 호스트 **동일한 것은 규칙 둘** — `oom_score_adj -800`(plane -600, weather cs -500 유지,
   geo cs 0 — 호스트 OOM이 PG backend보다 run worker를 먼저 고르게; transport cs는 transport 저장소 compose의 몫)과 "`mem_limit`가 있으면
   `memswap_limit == mem_limit`"(odroid는 cgroup v1 swap accounting이 켜져 있어 기본 swap 한도 2×가 실제로 적용된다; n150 cgroup v2에서는

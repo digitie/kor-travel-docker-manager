@@ -917,7 +917,7 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
    일이 없고, 비밀번호 전에는 gateway가 기동을 거부하기 때문이다. 첫 합류 PR이 `all`에 넣는다(테스트가 요구한다).
 7. **게이트.** G3-a — 첫 전환 전에 role `kor_travel_dagster_shared_app`의 연결 수를 전역 run 상한 12가 찬
    상태에서 잰다(`CONNECTION LIMIT`, dagster-postgres는 NullPool). 모자라면 db-init 두 문장과 테스트 기대를
-   함께 올린다. **2026-10-01 Map 전환 전 30 → 45**: weather·PinVi·geo 세 테넌트 1초 표본 745개(15분) 최대 6(평균 2.1),
+   함께 올린다(2026-11-25부터는 ADR-68 — root `.env` 키를 바꾸고 db-init을 다시 돌린다). **2026-10-01 Map 전환 전 30 → 45**: weather·PinVi·geo 세 테넌트 1초 표본 745개(15분) 최대 6(평균 2.1),
    같은 시각 Map 전용 instance의 role 최대 5 — Map 합류 뒤 추정 약 11; 전역 run 12가 찬 최악(run worker마다 연결 하나
    이상 + daemon·webserver 스레드)은 30에 다가간다. 공용 instance `max_connections` 100에 지금 최대 43이 붙으므로 여유는
    약 57 — 45는 그 안이다. 창 스크립트가 Map forward의 펜스 전에 db-init을 다시 돌려(멱등 ALTER) live role에 적용하고
@@ -2113,3 +2113,56 @@ concurrency를 쥔 run은 남기고, 재실행 계보(root tag 묶음)는 통째
 
 - (open) n150·odroid에 `fc52552976c61b10` 운반·converge(n150 부모, odroid Codex).
 - (open) 다른 Manager 소유 이미지(compose `build:`가 있는 서비스)도 같은 운반 경로로 옮길지.
+
+## ADR-68: 공용 Dagster role 연결 한도는 설정 키(기본 60)이고 수집 경보가 그 비율을 본다
+
+- 상태: accepted — 소스 구현, 운영 적용 전(n150 부모, odroid Codex)
+- 날짜: 2026-11-25
+- 결정자: 소유자(한도 45 → 60, 경보 80%·95%·연속 조건), 구현은 Claude
+
+### 컨텍스트
+
+Common py 0.1.0.dev2 채택(#646)으로 daemon primary 연결 상한이 12에서 24가 되어, 공용 role `kor_travel_dagster_shared_app`의 바쁜 시간
+동시 최악이 daemon 24 + webserver 6 + run worker 12 + 임시 start_run 3 ≈ 45로 `CONNECTION LIMIT 45`에 닿았다. 한도는 db-init
+(`kor-travel-shared-db-init-dagster`)의 CREATE·ALTER 두 문장에 리터럴로 있어, 손으로 `ALTER ROLE`해도 다음 실행이 45로 되돌렸다. 이
+role의 연결 수를 보는 수단도 없었다.
+
+### 결정
+
+1. 한도는 root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`(compose 기본 60, 두 plane 공통 기본값 — odroid는 host compose 사본이
+   이관될 때까지 그 사본의 값)이고 db-init 환경
+   `KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT`으로 들어간다. db-init은 양의 정수(앞자리 0·5자리 넘음 거부)가 아니면 기다리기 전에,
+   instance의 비-superuser 자리(`max_connections − superuser_reserved_connections − reserved_connections`) 이상이면 role을 바꾸기 전에
+   멈춘다. 창 스크립트(`dagster-shared-cutover.sh`)는 그 env의 렌더 값을 읽는다.
+2. 수집 경보(ADR-64)에 규칙 `dagster_role_connections`: storage DB owner role의 client 연결 수 / `rolconnlimit`이 최근 3회 평가 연속
+   80% 이상 주의, 95% 이상 위험(심각도는 그 관측 중 가장 낮은 비율). 해소도 3회 연속 80% 밑일 때만이고, 측정 실패 뒤 다시 모으는
+   동안·재시작 직후에는 해소하지 않는다(적대 리뷰가 거짓 해소 → Telegram 360분 억제를 재현). `/metrics`에 role 연결 수·한도·비율과 instance 전체 client 연결
+   수·자리.
+3. 유한 한도의 합이 자리를 넘는 것(n150: Dagster 60 + Map DB 55 = 115 > 97)은 막지 않고 문서로 경고한다 — 한도는 칸막이이지 예약이
+   아니다([daemon-pool-adoption.md](daemon-pool-adoption.md) "공용 instance 여유").
+
+### 근거
+
+- 최악 45는 60의 75%(odroid 43은 72%)로 주의선 밑이다. pool을 3+3으로 줄이는 대안은 dev2가 고친 대기·잠금 문제의 여유를 다시 줄인다.
+- n150 실측(2026-11-25): client 36/97, 이 role 13. Dagster가 60을 다 써도 37이 남아 지금의 다른 테넌트 22를 담는다. odroid: 30/97,
+  이 role 9, 남는 37이 geo·weather·transport 19를 담는다.
+- role 이름을 감시 설정에 다시 적지 않는다 — 감시 질의는 이미 `dagster_shared`에 붙으므로 그 DB의 owner에서 유도한다(AGENTS.md 15 유도).
+- 상한 검사는 "자리 이상인 한도는 다른 테넌트를 지키지 못한다"를 막는다. 새로 생기는 실패 모드: 누가 `max_connections`를 한도 이하로
+  내리면 db-init(곧 `ensure dagster`)이 멈춘다 — 의도된 fail-closed다.
+
+### 결과(긍정)
+
+- 한도 변경이 PR 없이 root `.env` 한 줄 + db-init 재실행이 된다. 손으로 한 `ALTER ROLE`이 되돌려지는 함정이 문서·설정에 드러난다.
+- 한도에 다가가는 것을 run 실패 전에 화면·Telegram·`/metrics`로 본다.
+
+### 결과(부정)·잃는 것
+
+- n150은 유한 한도 합 초과가 커졌다(100 → 115). Dagster와 Map이 동시에 최악이면 instance 자리가 먼저 끝나 한도 없는 PinVi·Concierge도
+  접속을 거절당한다. `ktdm_shared_postgres_client_connections`로 본다.
+- n150에서 이 값을 live role에 거는 Manager 명령은 없다(`ensure dagster`는 production 거부, plane 수렴은 db-init을 돌리지 않는다) — 설치
+  뒤 db-init one-shot을 lock G 아래서 직접 돌린다(무중단).
+
+### 후속
+
+- (open) n150 적용(부모): 설치 → db-init one-shot → `rolconnlimit` 60 확인.
+- (open) odroid 적용(Codex): host compose db-init의 리터럴 45를 고친 뒤 같은 one-shot.

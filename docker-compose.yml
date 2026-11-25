@@ -792,6 +792,8 @@ services:
       PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
       KOR_TRAVEL_DAGSTER_SHARED_DB: dagster_shared
       KOR_TRAVEL_DAGSTER_SHARED_APP_USER: kor_travel_dagster_shared_app
+      # 이 role의 CONNECTION LIMIT(root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`, 비우면 60). 아래 주석.
+      KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT: ${KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT:-60}
     secrets:
     - source: kor-travel-shared-postgres-password
       target: /run/secrets/kor-travel-shared-postgres-password
@@ -803,11 +805,13 @@ services:
     # 이 자격증명으로 붙는다. 그래서 속성은 CREATE와 ALTER 양쪽에 **전부** 적고(재실행이 드리프트를
     # 되돌린다) NOREPLICATION·NOBYPASSRLS까지 닫는다. role 소속은 0이어야 한다 — 누가 다른 role을
     # GRANT해 두었으면 그 권한이 조용히 따라오므로 여기서 멈춘다.
-    # CONNECTION LIMIT 45: 공용 plane 전체(webserver·daemon·code-server 넷의 run worker, 전역 run
-    # 상한 12)가 여는 연결의 상한이다. 한 테넌트의 연결 누수가 공용 instance의 `max_connections`를
-    # 먹어 다른 테넌트의 앱 DB 접속을 막지 못하게 한다. 30 → 45(2026-10-01, Map 전환 전 G3-a): 세 테넌트
-    # 실측 최대 6, Map 합류 뒤 추정 약 11, 전역 12가 찬 최악은 30에 다가간다; `max_connections` 100에서
-    # 지금 약 43을 쓰므로 여유 약 57 안에 든다(platform-topology.md §7 G3-a).
+    # CONNECTION LIMIT(기본 60): 공용 plane 전체(webserver·daemon·code-server의 run worker·임시 start_run
+    # instance)가 여는 연결의 상한이다. 한 테넌트의 연결 누수가 공용 instance의 `max_connections`를 먹어 다른
+    # 테넌트의 앱 DB 접속을 막지 못하게 한다. 30 → 45(2026-10-01, G3-a) → 60(2026-11-25 소유자 결정 — Common py
+    # dev2로 daemon primary 상한이 24가 되어 바쁜 시간 동시 최악 ≈45가 한도에 닿았다). 값은 정수 1 이상이고 이
+    # instance의 비-superuser 자리(`max_connections − superuser_reserved_connections − reserved_connections`)보다
+    # 작아야 한다 — 아니면 role을 바꾸기 전에 멈춘다. 두 plane 공통 기본값이다(odroid는 host compose 사본이 따로 있다). 예산·여유 계산은
+    # docs/daemon-pool-adoption.md "접속 예산".
     # 비밀번호는 명령줄이 아니라 psql 변수로 넘긴다(transport와 같다). 이미 있던 DB의
     # owner가 다르면 멈춘다 — 소유권은 createdb 때만 걸리므로(onboarding §7.3) 재실행이
     # 고치지 못한다.
@@ -819,6 +823,14 @@ services:
     - sh
     - -ec
     - |
+      # 연결 한도는 SQL에 그대로 들어가므로 숫자만(앞자리 0·5자리 넘음 거부) 받는다 — 기다리기 전에 본다.
+      CONN_LIMIT="$$KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT"
+      case "$$CONN_LIMIT" in
+        ''|*[!0-9]*|0*|??????*)
+          echo "KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT must be a positive integer (got '$$CONN_LIMIT')" >&2
+          exit 1
+          ;;
+      esac
       tries=0
       until pg_isready -q; do
         tries=$$((tries + 1))
@@ -839,13 +851,26 @@ services:
           exit 1
           ;;
       esac
+      # 한도가 이 instance의 비-superuser 자리 이상이면 다른 테넌트를 지키는 칸막이가 아니다 — role을 바꾸기 전에 멈춘다.
+      CAPACITY="$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT current_setting('max_connections')::int - current_setting('superuser_reserved_connections')::int - COALESCE(current_setting('reserved_connections', true)::int, 0)")"
+      case "$$CAPACITY" in
+        ''|*[!0-9]*)
+          echo "cannot read the non-superuser connection capacity of the shared instance (got '$$CAPACITY')" >&2
+          exit 1
+          ;;
+      esac
+      if [ "$$CONN_LIMIT" -ge "$$CAPACITY" ]; then
+        echo "KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT=$$CONN_LIMIT must be below the non-superuser capacity $$CAPACITY of the shared instance" >&2
+        exit 1
+      fi
 
       if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER'" | grep -q 1; then
         echo "role $$KOR_TRAVEL_DAGSTER_SHARED_APP_USER already exists"
-        printf '%s\n' "ALTER ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 45" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+        printf '%s\n' "ALTER ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT $$CONN_LIMIT" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
       else
-        printf '%s\n' "CREATE ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 45" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+        printf '%s\n' "CREATE ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT $$CONN_LIMIT" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
       fi
+      echo "role $$KOR_TRAVEL_DAGSTER_SHARED_APP_USER connection limit $$CONN_LIMIT (non-superuser capacity $$CAPACITY)"
       if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_DAGSTER_SHARED_DB'" | grep -q 1; then
         echo "database $$KOR_TRAVEL_DAGSTER_SHARED_DB already exists"
       else
@@ -953,7 +978,7 @@ services:
       # daemon wrapper의 primary storage engine 3개(run·event·schedule) 각각의 QueuePool(Common py 0.1.0.dev2).
       # 기본 4+4·대기 10초 = 연결 상한 3×8=24, 유휴 보관 3×4=12. 허용 1~10·0~10(합 10 이하)·1~20초. 빈 값은 유효한 값이
       # 없으므로 `:-`로 기본값을 쓴다(reload의 `-`와 다르다). 범위 밖은 plane 수렴이 다시 만들기 전에 거부한다(Common도 종료 코드
-      # 2로 거절). 이 role(db-init의 CONNECTION LIMIT 45)을 webserver·run worker·임시 start_run instance도 함께 쓴다 — 올리기 전에
+      # 2로 거절). 이 role(db-init의 CONNECTION LIMIT, 기본 60)을 webserver·run worker·임시 start_run instance도 함께 쓴다 — 올리기 전에
       # docs/daemon-pool-adoption.md의 접속 예산을 다시 센다.
       KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE: ${KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE:-4}
       KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW: ${KOR_TRAVEL_DAGSTER_DAEMON_POOL_MAX_OVERFLOW:-4}

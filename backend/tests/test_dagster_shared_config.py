@@ -347,9 +347,9 @@ def test_db_init_follows_the_shared_postgres_pattern() -> None:
     assert "*[!A-Za-z0-9._~-]*" in script
     # C3 — 오류를 삼키지 않는다.
     assert "|| true" not in script and "2>/dev/null" not in script
-    # 속성은 CREATE와 ALTER **둘 다**에 전부 — 재실행이 드리프트를 되돌린다.
+    # 속성은 CREATE와 ALTER **둘 다**에 전부 — 재실행이 드리프트를 되돌린다. 연결 한도는 검증한 env 값이다.
     attributes = (
-        "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 45"
+        "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT $$CONN_LIMIT"
     )
     for verb in ("CREATE", "ALTER"):
         statement = f"{verb} ROLE {role} WITH LOGIN PASSWORD :'role_password' {attributes}\""
@@ -358,11 +358,13 @@ def test_db_init_follows_the_shared_postgres_pattern() -> None:
     assert "FROM pg_auth_members WHERE member =" in script
 
 
-def _run_db_init_with_stubs(tmp_path: Path, *, ready_after: int | None) -> tuple[int, str, str]:
+def _run_db_init_with_stubs(
+    tmp_path: Path, *, ready_after: int | None, connection_limit: str | None = "60"
+) -> tuple[int, str, str]:
     """db-init 스크립트를 stub `pg_isready`·`sleep`·`psql`·`cat`으로 돌린다.
 
-    `ready_after`번째 `pg_isready`부터 성공한다(None이면 끝내 실패). 반환은 (종료 코드, stderr,
-    호출 기록)이다.
+    `ready_after`번째 `pg_isready`부터 성공한다(None이면 끝내 실패). `connection_limit`이 None이면 그 env를 싣지 않는다.
+    반환은 (종료 코드, stderr, 호출 기록)이다.
     """
 
     script = _compose()["services"][_DB_INIT]["command"][-1].replace("$$", "$")
@@ -391,6 +393,8 @@ def _run_db_init_with_stubs(tmp_path: Path, *, ready_after: int | None) -> tuple
         "PGHOST": "127.0.0.1",
         "PGPORT": "11000",
     }
+    if connection_limit is not None:
+        environment["KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT"] = connection_limit
     completed = subprocess.run(
         ["sh", "-ec", script],
         env=environment,
@@ -428,6 +432,24 @@ def test_db_init_proceeds_once_the_instance_accepts(tmp_path: Path) -> None:
     assert recorded[:5] == ["pg_isready", "sleep", "pg_isready", "sleep", "pg_isready"]
     assert recorded[5].startswith("cat /run/secrets/")
     assert code == 7
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh가 필요하다")
+@pytest.mark.parametrize("value", [None, "", "0", "060", "-1", "60 SUPERUSER", "60;", " 60", "100000"])
+def test_db_init_refuses_a_bad_connection_limit_before_waiting(tmp_path: Path, value: str | None) -> None:
+    """한도는 SQL에 그대로 들어간다 — 양의 정수(5자리까지)가 아니면 instance를 기다리기도 전에, 아무것도 치지 않고 멈춘다."""
+
+    code, stderr, calls = _run_db_init_with_stubs(tmp_path, ready_after=1, connection_limit=value)
+    assert code == 1
+    assert "KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT must be a positive integer" in stderr
+    assert calls == ""  # pg_isready·secret·psql 어느 것도 부르지 않았다
+
+
+def test_db_init_connection_limit_defaults_to_60_from_the_root_env() -> None:
+    environment = _compose()["services"][_DB_INIT]["environment"]
+    assert environment["KOR_TRAVEL_DAGSTER_SHARED_APP_CONNECTION_LIMIT"] == (
+        "${KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT:-60}"
+    )
 
 
 def test_migrate_waits_for_the_db_init_and_runs_the_host_image() -> None:

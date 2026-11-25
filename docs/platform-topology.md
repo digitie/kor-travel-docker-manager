@@ -124,8 +124,8 @@ ADR-53으로 공용 인스턴스로 옮겨, 이제 Manager의 PostgreSQL은 공�
 `dagster_shared`를 담는다(`kor_travel_transport_dagster`는 만들지 않는다). n150 instance의 그 세 DB(+`kor_travel_transport_dagster`)는
 전환 확인 뒤 drop한다(데이터 이관 없음 — 소스에서 재적재). PG는 registry에서 `dagster` target의 service이므로 odroid에서는
 `ensure dagster`가 올린다. 이미지는 arm64 `imresamu/postgis:16-3.5`(env 파생, 기본값은 현재 문자열), 튜닝은 env 파생(기본값 =
-아래 n150 값; `max_connections`는 compose에 없어 서버 기본 100 그대로 — 추가하지 않는다; connlimit은 `dagster_shared` 45 리터럴만이고
-앱 role은 db-init이 limit을 두지 않는다). 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) §11.
+아래 n150 값; `max_connections`는 compose에 없어 서버 기본 100 그대로 — 추가하지 않는다; connlimit은 `dagster_shared` role 하나 — root `.env`
+`KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`, 기본 60(2026-11-25, 옛 45 리터럴) — 이고 앱 role은 db-init이 limit을 두지 않는다). 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) §11.
 
 | 인스턴스 | 포트 | 소유 | 담긴 DB |
 |---|---:|---|---|
@@ -361,7 +361,7 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
      EXISTS (SELECT 1 FROM run_tags t WHERE t.run_id = r.run_id AND t.key = 'dagster/code_location'
      AND t.value IN (<상한 값들>))`이 0이다. 0이 아니면 되돌린다(상한 없는 run이 전역 12를 먹는다).
    - **3단계 게이트(G3-a) — 첫 프로젝트 전환 전에 통과해야 한다.** role
-     `kor_travel_dagster_shared_app`의 `CONNECTION LIMIT`(db-init `kor-travel-shared-db-init-dagster`, 처음 30 → 45)을
+     `kor_travel_dagster_shared_app`의 `CONNECTION LIMIT`(db-init `kor-travel-shared-db-init-dagster`, 처음 30 → 45 → 2026-11-25 60, [daemon-pool-adoption.md](daemon-pool-adoption.md) 접속 예산)을
      전역 run 상한 12가 찬 상태에서 **다시 잰다**. dagster-postgres는 `NullPool`이라 run worker·
      webserver·daemon 스레드(schedules·sensors `use_threads`)가 저마다 연결을 열었다 닫는다 — 30은
      추정이지 실측이 아니고 모자랄 수 있다. 공용 webserver·daemon과 PinVi code-server를 세운 뒤

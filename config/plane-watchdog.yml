@@ -120,6 +120,18 @@ rules:
     warning_ratio: 0.5
     critical_ratio: 0.8
 
+  # 공용 Dagster role(storage DB owner — `kor_travel_dagster_shared_app`)의 client 연결 수 / 그 role의 CONNECTION LIMIT
+  # (db-init 기본 60, root `.env` `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`). 한도에 닿으면 새 접속이 거절되고 그때 접속하던
+  # run worker의 run이 실패한다. Common py dev2 뒤 바쁜 시간 동시 최악 ≈45(소유자 결정 2026-11-25 — 80% 주의·95% 위험).
+  # 최근 for_evaluations회 평가가 모두 그 선 이상일 때만 낸다(평가 120초 × 3 — 약 4~6분 지속; 한 번 튄 몰림으로 깨우지 않는다).
+  # 위험도 최근 3회가 모두 95% 이상일 때만이다. 해소도 최근 3회가 모두 80% 밑일 때만이다(그 사이는 경보를 그대로 둔다).
+  # 측정이 실패하면 연속을 처음부터 다시 센다(다시 모으는 동안 해소하지 않는다).
+  dagster_role_connections:
+    enabled: true
+    warning_ratio: 0.8
+    critical_ratio: 0.95
+    for_evaluations: 3
+
 # location 정지를 감지하면 daemon과 그 location code-server의 스레드 상태를 파일로 남긴다.
 # py-spy가 있으면 Python 스택을, 없으면 /proc의 스레드 상태·커널 대기 지점과 docker 로그 꼬리만 남긴다.
 # fd 경보(주의·위험 각각 한 번)면 그 컨테이너의 `dagster api grpc` 프로세스 fd 내역(종류별 개수, 소켓은

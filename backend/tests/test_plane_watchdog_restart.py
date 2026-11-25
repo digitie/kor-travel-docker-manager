@@ -60,6 +60,7 @@ class Probes:
     def disks(self, paths): return [pr.DiskObservation("/", 100, 10, 90)], []
     def io_pressure(self): return None
     def dagster_fds(self): return self.fds, []
+    def role_connections(self): return pr.RoleConnections("kor_travel_dagster_shared_app", 13, 60, 36, 100, 3)
     def capture(self, location, context): return None
 
     def capture_fds(self, container, context):

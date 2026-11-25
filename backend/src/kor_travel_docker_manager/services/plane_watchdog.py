@@ -13,6 +13,7 @@
 | 공항 통계 사전집계 갱신 지연 | transport 공항 수집 run의 `kortravel/analytics-refresh` 태그 |
 | 디스크 사용률·IO 압력(PSI) | statvfs·`/proc/pressure/io` |
 | Dagster 컨테이너 열린 fd / nofile 한도 | `/proc/<pid>/fd`·`limits` |
+| 공용 Dagster role 연결 수 / CONNECTION LIMIT | `pg_stat_activity`·`pg_roles`(storage DB owner) |
 | storage에 닿지 못함 | 위 질의의 연속 실패 |
 
 설계 원칙:
@@ -35,7 +36,7 @@ import logging
 import os
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,7 @@ from kor_travel_docker_manager.services.plane_watchdog_probe import (
     DiskObservation,
     Instigator,
     ProbeError,
+    RoleConnections,
     RunRecord,
     TaggedRun,
 )
@@ -83,6 +85,7 @@ RULE_LABELS: dict[str, str] = {
     "disk_usage": "디스크 사용률",
     "io_pressure": "IO 압력(PSI)",
     "dagster_fd_usage": "Dagster 열린 fd",
+    "dagster_role_connections": "공용 Dagster role 연결 수",
 }
 _STORAGE_RULES = ("location_tick_stall", "schedule_no_success", "tick_failures", "consecutive_failures",
                   "launch_failure_streak", "launch_failure_rate", "analytics_refresh_lag")
@@ -145,6 +148,8 @@ _RULE_KEYS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "io_pressure": {"enabled": bool, "severity": str, "full_avg300_percent": (int, float),
                     "for_evaluations": int},
     "dagster_fd_usage": {"enabled": bool, "warning_ratio": (int, float), "critical_ratio": (int, float)},
+    "dagster_role_connections": {"enabled": bool, "warning_ratio": (int, float), "critical_ratio": (int, float),
+                                 "for_evaluations": int},
 }
 _SECTION_KEYS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "storage": {"statement_timeout_seconds": int, "bootstrap_hours": (int, float),
@@ -222,6 +227,11 @@ def parse_config(document: Any) -> WatchdogConfig:
         raise ConfigError("rules.disk_usage: warning이 critical보다 클 수 없습니다")
     if rules["dagster_fd_usage"]["warning_ratio"] > rules["dagster_fd_usage"]["critical_ratio"]:
         raise ConfigError("rules.dagster_fd_usage: warning이 critical보다 클 수 없습니다")
+    role_rule = rules["dagster_role_connections"]
+    if not 0 < float(role_rule["warning_ratio"]) <= float(role_rule["critical_ratio"]) <= 1:
+        raise ConfigError("rules.dagster_role_connections: 0 < warning_ratio ≤ critical_ratio ≤ 1이어야 합니다")
+    if not 1 <= role_rule["for_evaluations"] <= 30:
+        raise ConfigError("rules.dagster_role_connections.for_evaluations: 1~30이어야 합니다")
     _check_analytics_refresh(rules["analytics_refresh_lag"])
     storage = _check_mapping(document["storage"], _SECTION_KEYS["storage"], "storage")
     diagnostics = _check_mapping(document["diagnostics"], _SECTION_KEYS["diagnostics"], "diagnostics")
@@ -798,6 +808,68 @@ def evaluate_fds(observations: Sequence[ContainerFds], rule: Mapping[str, Any]) 
     return findings
 
 
+def evaluate_role_connections(samples: Sequence[RoleConnections], rule: Mapping[str, Any]) -> list[Finding]:
+    """공용 Dagster role의 연결 수 / 한도. 최근 `for_evaluations`회 관측이 **모두** 임계 이상일 때만 낸다(연속 조건).
+
+    심각도는 그 관측들의 가장 낮은 비율로 정한다 — 위험은 최근 N회가 모두 위험선 이상일 때만이다(한 번 튄 값으로 오르지
+    않는다). 해소는 이 함수가 아니라 `role_connections_settled`(최근 N회 모두 주의선 밑)가 정한다 — 그 사이에는 경보를 그대로
+    둔다. 한도가 없으면(-1) instance의 비-superuser 자리를 분모로 쓴다. 한도가 0이면(모든 새 접속 거절) 연속을 기다리지 않고 위험이다.
+    """
+
+    needed = max(1, int(rule["for_evaluations"]))
+    recent = list(samples)[-needed:]
+    if recent and recent[-1].effective_limit <= 0:
+        latest = recent[-1]
+        return [Finding(
+            rule="dagster_role_connections", subject=latest.role, severity="critical",
+            title=f"공용 Dagster role {latest.role}의 연결 한도가 {latest.effective_limit}입니다 — 새 접속이 모두 거절됩니다",
+            detail=("db-init은 0을 받지 않으므로 손으로 한 `ALTER ROLE`이거나 instance 자리 설정이 잘못됐습니다. "
+                    "`KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`으로 db-init을 다시 돌립니다."),
+            evidence={"connections": latest.connections, "limit": latest.limit, "capacity": latest.capacity},
+        )]
+    if len(recent) < needed:
+        return []
+    ratios = [item.ratio for item in recent]
+    if any(ratio is None for ratio in ratios):
+        return []
+    lowest = min(ratio for ratio in ratios if ratio is not None)
+    if lowest >= float(rule["critical_ratio"]):
+        severity, threshold = "critical", float(rule["critical_ratio"])
+    elif lowest >= float(rule["warning_ratio"]):
+        severity, threshold = "warning", float(rule["warning_ratio"])
+    else:
+        return []
+    latest = recent[-1]
+    limit_text = (f"한도 {latest.limit}" if latest.limit >= 0
+                  else f"한도 없음 — instance 비-superuser 자리 {latest.capacity} 기준")
+    return [Finding(
+        rule="dagster_role_connections", subject=latest.role, severity=severity,
+        title=(f"공용 Dagster role {latest.role} 연결 {latest.connections}/{latest.effective_limit}"
+               f"({latest.ratio or 0:.0%}) — 최근 {needed}회 평가 연속 {threshold:.0%} 이상"),
+        detail=(f"{limit_text}. 한도에 닿으면 PostgreSQL이 이 role의 새 접속을 `too many connections for role`로 거절하고, 그때 "
+                "접속하던 쪽(run worker면 그 run)이 실패합니다. daemon pool(`KOR_TRAVEL_DAGSTER_DAEMON_POOL_*`)을 줄이거나 한도"
+                "(`KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`)를 올리기 전에 docs/daemon-pool-adoption.md의 접속 예산을 다시 셉니다. "
+                f"instance 전체 client 연결 {latest.client_connections}/{latest.capacity}."),
+        evidence={"connections": latest.connections, "limit": latest.limit,
+                  "ratio": round(latest.ratio or 0, 3), "recent_ratios": [round(ratio or 0, 3) for ratio in ratios],
+                  "client_connections": latest.client_connections, "capacity": latest.capacity},
+    )]
+
+
+def role_connections_settled(samples: Sequence[RoleConnections], rule: Mapping[str, Any]) -> bool:
+    """최근 `for_evaluations`회 관측이 모두 주의선 밑인가 — 그래야 이 규칙의 경보를 푼다(해소에도 같은 연속 조건).
+
+    관측이 모자라면(기동 직후·측정 실패 뒤) 풀지 않는다 — 다시 모으는 동안 높은 값이 "정상"으로 읽혀 해소가 나가고, 이어
+    다시 울린 위험이 Telegram 반복 억제에 묶이는 것을 막는다.
+    """
+
+    needed = max(1, int(rule["for_evaluations"]))
+    recent = list(samples)[-needed:]
+    warning = float(rule["warning_ratio"])
+    return len(recent) == needed and all(
+        item.ratio is not None and item.effective_limit > 0 and item.ratio < warning for item in recent)
+
+
 # ---------------------------------------------------------------------------
 # 경보 상태
 # ---------------------------------------------------------------------------
@@ -945,6 +1017,7 @@ class Probes(Protocol):
     def disks(self, paths: Sequence[str]) -> tuple[list[DiskObservation], list[str]]: ...
     def io_pressure(self) -> dict[str, dict[str, float]] | None: ...
     def dagster_fds(self) -> tuple[list[ContainerFds], list[str]]: ...
+    def role_connections(self) -> RoleConnections: ...
     def capture(self, location: str, context: dict[str, Any]) -> dict[str, Any] | None: ...
     def capture_fds(self, container: str, context: dict[str, Any]) -> dict[str, Any] | None: ...
     def running_runs(self, location: str) -> int: ...
@@ -999,6 +1072,9 @@ class HostProbes:
 
     def dagster_fds(self) -> tuple[list[ContainerFds], list[str]]:
         return probe_module.read_dagster_fds()
+
+    def role_connections(self) -> RoleConnections:
+        return self._storage.role_connections()
 
     def capture(self, location: str, context: dict[str, Any]) -> dict[str, Any] | None:
         from kor_travel_docker_manager.services.plane_watchdog_diagnostics import (
@@ -1124,6 +1200,11 @@ class PlaneWatchdog:
         self._checks: dict[str, CheckState] = {}
         self._locations: list[LocationTickState] = []
         self._fds: list[ContainerFds] = []
+        # 연속 조건을 위한 최근 관측(측정 실패면 비운다 — 끊긴 관측을 연속으로 세지 않는다).
+        self._role_samples: deque[RoleConnections] = deque(
+            maxlen=int(config.rule("dagster_role_connections")["for_evaluations"]) if config else 1)
+        # 지표용 마지막 관측 — 한 번의 대입이라 `/metrics` 스레드가 deque를 들여다보다 경합하지 않는다.
+        self._role_latest: RoleConnections | None = None
         self._evaluated_at: float | None = None
         self._evaluation_error: str | None = None
         self._last_capture: dict[str, float] = {}
@@ -1364,6 +1445,77 @@ class PlaneWatchdog:
             checks["dagster_fd_usage"] = CheckState("dagster_fd_usage", "disabled")
         return observed
 
+    def _forget_role_samples(self) -> None:
+        """연속 관측을 처음부터 다시 센다(측정 실패·plane 없음·평가 예외). 지표도 옛 값을 내지 않는다."""
+
+        self._role_samples.clear()
+        self._role_latest = None
+
+    def _role_connections_round(
+        self, findings: list[Finding], checks: dict[str, CheckState], *, storage_reachable: bool,
+    ) -> set[str]:
+        """공용 Dagster role 연결 수.
+
+        관측(observed)으로 넘기는 것은 판정이 끝났을 때뿐이다 — 경보를 낼 때, 또는 최근 N회가 모두 주의선 밑일 때(해소).
+        그 사이(기동 직후·측정 실패 뒤 다시 모으는 중, 주의선 근처를 오가는 중)에는 관측으로 넘기지 않아 기존 경보를 그대로
+        둔다. 이번 평가에서 storage 질의가 실패했으면 같은 PG에 이 질의를 더 얹지 않는다.
+        """
+
+        assert self.config is not None and self._probes is not None
+        name = "dagster_role_connections"
+        if not self.config.enabled(name):
+            self._forget_role_samples()
+            checks[name] = CheckState(name, "disabled")
+            return set()
+        if not storage_reachable:
+            self._forget_role_samples()
+            checks[name] = CheckState(name, "unavailable", "Dagster storage에 닿지 못해 이번 평가에서 묻지 않았습니다")
+            return set()
+        try:
+            sample = self._probes.role_connections()
+        except ProbeError as exc:
+            self._forget_role_samples()
+            checks[name] = CheckState(name, "unavailable", str(exc))
+            return set()
+        self._role_samples.append(sample)
+        self._role_latest = sample
+        rule = self.config.rule(name)
+        needed = int(rule["for_evaluations"])
+        warning = float(rule["warning_ratio"])
+        produced = evaluate_role_connections(self._role_samples, rule)
+        settled = role_connections_settled(self._role_samples, rule)
+        findings.extend(produced)
+        ratio = sample.ratio
+        detail = (f"{sample.connections}/{sample.effective_limit}"
+                  + (f"({ratio:.0%})" if ratio is not None else "")
+                  + ("" if sample.limit >= 0 else " 한도 없음")
+                  + f" · instance {sample.client_connections}/{sample.capacity}")
+        active = any(alert.finding.rule == name for alert in self._book.active.values())
+        if produced:
+            state = "firing"
+        elif settled:
+            state = "ok"
+        else:
+            # 판정 대기 — 경보가 있으면 그대로 두고(해소 대기), 없으면 아직 울리지 않는다(연속 관측 대기).
+            above = ratio is not None and ratio >= warning
+            streak = 0
+            for item in reversed(self._role_samples):
+                if (item.ratio is not None and item.ratio >= warning) != above:
+                    break
+                streak += 1
+            if active:
+                state = "firing"
+                detail += (f" · 해소 대기(주의선 밑 {streak}/{needed}회 연속)" if not above
+                           else f" · 판정 대기(관측 {len(self._role_samples)}/{needed}회)")
+            else:
+                state = "ok"
+                if above:
+                    detail += f" · 주의선 넘음 {streak}/{needed}회 연속"
+            checks[name] = CheckState(name, state, detail)
+            return set()
+        checks[name] = CheckState(name, state, detail)
+        return {name}
+
     def evaluate_once(self) -> list[Transition]:
         if self.config is None or self._probes is None:
             return []
@@ -1381,13 +1533,17 @@ class PlaneWatchdog:
             observed |= self._host_round(findings, checks)
             if self._plane_expected:
                 observed |= self._storage_round(now, findings, checks)
+                observed |= self._role_connections_round(
+                    findings, checks, storage_reachable=self._storage_failures == 0)
             else:
-                for rule in ("storage_unreachable", *_STORAGE_RULES):
+                self._forget_role_samples()
+                for rule in ("storage_unreachable", *_STORAGE_RULES, "dagster_role_connections"):
                     checks[rule] = CheckState(rule, "not_applicable", "이 호스트에는 공용 Dagster plane이 없습니다")
                     observed.add(rule)
         except Exception as exc:  # noqa: BLE001 - 한 번의 평가 실패가 루프를 죽이지 않는다
             logger.exception("plane watchdog evaluation failed")
             error = f"{type(exc).__name__}: {exc}"
+            self._forget_role_samples()  # 이번 평가의 role 관측이 빠졌을 수 있다 — 끊긴 관측을 잇지 않는다.
         required = {"io_pressure": int(self.config.rule("io_pressure")["for_evaluations"])}
         with self._lock:
             transitions = self._book.apply(findings, observed, now, required)
@@ -1700,6 +1856,7 @@ class PlaneWatchdog:
             locations = list(self._locations)
             active = list(self._book.active.values())
             evaluated_at = self._evaluated_at
+            role = self._role_latest
         lines: list[str] = []
         lines.extend(_metric_block(
             "ktdm_plane_watchdog_last_evaluation_timestamp_seconds",
@@ -1724,6 +1881,28 @@ class PlaneWatchdog:
         lines.extend(_metric_block(
             "ktdm_dagster_location_tick_age_seconds", "Seconds since the newest schedule/sensor tick of a location.",
             "gauge", [({"location": item.location}, round(item.silence_seconds)) for item in locations]))
+        # 마지막 관측이 실패했거나 plane이 없으면 내지 않는다(옛 값이 남아 보이지 않게).
+        if role is not None:
+            labels = {"role": role.role}
+            lines.extend(_metric_block(
+                "ktdm_dagster_role_connections", "Client connections of the shared Dagster role.", "gauge",
+                [(labels, role.connections)]))
+            lines.extend(_metric_block(
+                "ktdm_dagster_role_connection_limit", "CONNECTION LIMIT of the shared Dagster role (-1 means none).",
+                "gauge", [(labels, role.limit)]))
+            if role.ratio is not None:  # 한도 0이면 비율이 없다(경보는 위험으로 따로 낸다)
+                lines.extend(_metric_block(
+                    "ktdm_dagster_role_connection_ratio",
+                    "Client connections of the shared Dagster role over its limit (or the instance capacity without one).",
+                    "gauge", [(labels, round(role.ratio, 4))]))
+            lines.extend(_metric_block(
+                "ktdm_shared_postgres_client_connections",
+                "Client connections of the shared PostgreSQL instance (all roles).", "gauge",
+                [({}, role.client_connections)]))
+            lines.extend(_metric_block(
+                "ktdm_shared_postgres_connection_capacity",
+                "max_connections minus superuser_reserved_connections and reserved_connections.", "gauge",
+                [({}, role.capacity)]))
         return "\n".join(lines) + "\n"
 
 
@@ -1753,6 +1932,7 @@ __all__ = [
     "evaluate_io_pressure",
     "evaluate_launch_failure_streak",
     "evaluate_launch_failures",
+    "evaluate_role_connections",
     "evaluate_tick_failures",
     "evaluate_location_stalls",
     "evaluate_schedule_no_success",

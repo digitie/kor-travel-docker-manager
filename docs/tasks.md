@@ -26,9 +26,15 @@
   (py 0.1.0.dev2, `f1faf56`) → vendor wheel·host 이미지 tag `fc52552976c61b10`, daemon pool env(4·4·10)·webserver pre-ping 기본 켬 렌더.
   [채택·접속 예산](daemon-pool-adoption.md).
   - [ ] **적용**: WSL에서 빌드한 이미지 운반(아래 ADR-67) → plane 수렴(n150 부모, odroid Codex). 배포 뒤 role 연결 수(상주 약 15 예상,
-    한도 45)·`Retrying failed database connection` 빈도·첫 요청 실패 사라짐 관측.
-  - [ ] 소유자: 바쁜 시간 동시 최악 ≈45로 role `CONNECTION LIMIT 45`에 닿는다 — 관측 뒤 pool 3+3 또는 한도 60 중 결정.
-  - [ ] 공용 role 연결 수 지표·경보(한도 45 대비) — 지금은 관측 수단이 없다.
+    한도 60)·`Retrying failed database connection` 빈도·첫 요청 실패 사라짐 관측.
+  - [x] 소유자 결정(2026-11-25): pool은 그대로, role 한도 **45 → 60**. db-init의 한도를 root `.env`
+    `KTDM_DAGSTER_SHARED_ROLE_CONNECTION_LIMIT`(기본 60, 두 plane 공통)으로 — 양의 정수·instance 비-superuser 자리 미만만 받는다.
+    공용 instance 여유 표(n150 유한 한도 합 115 > 자리 97 경고)는 [daemon-pool-adoption.md](daemon-pool-adoption.md).
+    - [ ] **n150 적용(부모)**: 설치 뒤 db-init one-shot을 lock G 아래서 한 번(무중단 — 같은 문서 "n150 적용 경로") → `rolconnlimit` 60.
+    - [ ] **odroid 적용(Codex)**: host compose(`/opt/kor-travel-odroid/compose.yml`) db-init의 리터럴 45 두 문장을 고친 뒤 같은 one-shot.
+  - [x] 공용 role 연결 수 지표·경보: 수집 경보 규칙 `dagster_role_connections`(80% 주의·95% 위험, 3회 연속)·`/metrics`
+    `ktdm_dagster_role_connections`·`_connection_limit`·`_connection_ratio`·`ktdm_shared_postgres_client_connections`·`_connection_capacity`
+    ([plane-watchdog.md](plane-watchdog.md) §3.3).
   - [ ] `deployment-readiness`(화면)에 plane 이미지 준비 행 — 지금은 `dagster-plane converge --dry-run`의 `images`뿐.
 - [x] **운영 박스 빌드 금지(ADR-67, 2026-11-24 소유자 결정)**: plane 수렴이 `--build`로 n150에서 host 이미지를 빌드하던 것을 없앴다 —
   `scripts/dagster_host_image.py build`(WSL)·`load --ssh`(tar sha256·platform·내용 label·layer digest 대조), converge는 받은 이미지의
