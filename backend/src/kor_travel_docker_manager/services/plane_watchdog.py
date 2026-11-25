@@ -1544,7 +1544,7 @@ class PlaneWatchdog:
             logger.exception("plane watchdog evaluation failed")
             error = f"{type(exc).__name__}: {exc}"
             self._forget_role_samples()  # 이번 평가의 role 관측이 빠졌을 수 있다 — 끊긴 관측을 잇지 않는다.
-        required ={"io_pressure": int(self.config.rule("io_pressure")["for_evaluations"])}
+        required = {"io_pressure": int(self.config.rule("io_pressure")["for_evaluations"])}
         with self._lock:
             transitions = self._book.apply(findings, observed, now, required)
             for rule, state in checks.items():

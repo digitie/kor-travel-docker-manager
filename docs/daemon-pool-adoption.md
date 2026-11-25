@@ -257,7 +257,9 @@ for c in $(docker ps --format '{{.Names}}'); do
   if [ "$(printf %s "$got" | sha256sum)" = "$want" ]; then echo "$c same"; else echo "$c DIFFERENT"; fi
 done
 EOF
+#    줄 수가 소비자 수와 같아야 한다(2026-11-25 n150: daemon·webserver·Map·PinVi·Concierge code-server 5) — 0줄이면 확인이 된 것이 아니다.
 #    DIFFERENT가 하나라도 있으면 멈춘다 — `.env`가 그 컨테이너 생성 뒤에 바뀐 것이다. 이대로 돌리면 그 소비자의 새 접속이 인증에 실패한다.
+#    (`.env` 값이 따옴표·`export`와 함께 적혀 있어도 DIFFERENT가 난다 — 멈추는 쪽으로 틀린다.)
 #    (daemon·webserver는 `ktdctl dagster-plane converge --dry-run`의 outcome `current`로도 같은 것을 본다.)
 # 3) 사전 확인 B — lock G 파일이 Manager가 만든 모양(root·0600·링크 1)인가. 없으면 flock이 0644로 만들어 이후 Manager 변경이 모두
 #    "lock is unsafe"로 거부되므로, 이 값이 아니면 돌리지 않는다.
