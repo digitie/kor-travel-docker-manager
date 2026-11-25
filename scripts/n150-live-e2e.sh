@@ -204,6 +204,9 @@ for (const name of names) {
   if (value && value.length >= 3) {
     secrets.push(value, encodeURIComponent(value), encodeURIComponent(value).replace(/%20/g, '+'),
       JSON.stringify(value).slice(1, -1), Buffer.from(value).toString('base64'));
+    // 접근성 스냅샷(error-context.md)은 공백을 하나로 줄여 적는다.
+    const squeezed = value.replace(/\s+/g, ' ').trim();
+    if (squeezed.length >= 3 && squeezed !== value) secrets.push(squeezed);
   }
 }
 secrets.sort((a, b) => b.length - a.length);
@@ -267,7 +270,8 @@ JS
 
 mkdir -p "$LIVE_E2E_RESULTS_PARENT"
 chmod 700 "$LIVE_E2E_RESULTS_PARENT"
-trap 'chown -R "$LIVE_E2E_OWNER" "$LIVE_E2E_RESULTS_PARENT" 2>/dev/null || true' EXIT
+# 중단(Ctrl-C·gate 시간 초과)돼도 결과 글 파일의 비밀값을 지우고 소유권을 되돌린다.
+trap 'node -e "$redact_js" scrub "$LIVE_E2E_RESULTS_PARENT" >/dev/null 2>&1 || true; chown -R "$LIVE_E2E_OWNER" "$LIVE_E2E_RESULTS_PARENT" 2>/dev/null || true' EXIT
 # 이전 실행의 보고서를 이번 결과로 읽지 않게 비운다.
 if [[ -f "$LIVE_E2E_REPORT" ]]; then : >"$LIVE_E2E_REPORT"; fi
 start_ms=$(($(date +%s) * 1000))

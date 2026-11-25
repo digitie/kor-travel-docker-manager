@@ -83,7 +83,7 @@ scripts/n150-live-e2e.sh --project desktop --grep '수집 경보'
   중에는 docker 그룹(=root 상당)이 `docker inspect`로 컨테이너 env를 볼 수 있다. Node 내려받기·`npm` 설치 단계와
   브라우저 프로세스에는 자격 env를 넘기지 않는다. Playwright 출력·요약에서는 비밀번호 값(URL·base64 인코딩 포함)을
   `***`로 가리고, 끝나면 결과 디렉터리의 글 파일(`error-context.md`·`report.json` 등)에서도 지운다. trace와 실패 시
-  접근성 스냅샷(`PLAYWRIGHT_NO_COPY_PROMPT=1`)은 끄고, 로그인 helper는 제출 뒤 비밀번호 칸을 비운다.
+  페이지 접근성 스냅샷(`PLAYWRIGHT_NO_COPY_PROMPT=1`)은 끄고(단언 실패가 싣는 스냅샷은 Playwright 1.65에서도 남는다 — 그래서 끝의 결과 파일 비밀값 제거가 최종 방어이고, 실행이 끊겨도 EXIT trap에서 돈다), 로그인 helper는 제출 뒤 비밀번호 칸을 비운다.
 - 설정은 `frontend/playwright.live.config.ts`로 고정이고 인자는 `--list`·`--project desktop|mobile`·`--grep`·
   `--grep-invert`·`--max-failures`만 받는다. 쓰기 스펙(`*.write.live.spec.ts`)은 `KTDM_LIVE_E2E_WRITE=1`을 줄 때만
   수집한다 — 지금은 하나도 없다.

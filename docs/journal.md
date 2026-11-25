@@ -17,6 +17,7 @@
   통과(로그인 없음), 로컬 가짜 backend + 실제 production 빌드 frontend에 6건 통과·Telegram 켜짐 분기 통과·host 불일치 시 실패
   요약과 종료 코드 1, 로그에 비밀번호 없음을 확인했다. frontend type-check·lint·build 통과.
 - 적대 리뷰 2인(보안·정확성) 반영: 로그인 실패 시 Playwright `error-context.md` 접근성 스냅샷에 비밀번호가 평문으로 남는 결함(blocker) → `PLAYWRIGHT_NO_COPY_PROMPT=1`·제출 뒤 비밀번호 칸 비움·결과 글 파일 비밀값 제거. WebSocket 점검이 4401로 닫힌 소켓도 통과시키던 것 → 프레임 2개 이상·열린 상태 단언. `TOKEN` 금지 단언이 Telegram 사유(토큰 변수 이름)와 모순 → 토큰 값 모양 검사. 배포 직후 첫 평가 전 실패 → 최대 5분 대기. 60초 재조회 경합 → 마지막 응답 기준 재시도. 틀린 자격의 로그인 잠금 → globalSetup 사전 로그인 1회. 그 밖에 context 단위 변경 차단·service worker 차단, `IFS= read`·`--grep '수집 경보'` 문서 수정, 비-loopback http 거부, 경로 심볼릭 링크 거부, `/usr/bin/docker`, `--shm-size=1g`, 설치·브라우저 env에서 자격 제외, flock 직렬화, EXIT trap chown, 이전 보고서 비움. 로컬 가짜 backend에서 6건·틀린 자격 사전 중단(로그인 1회)·결과 파일 비밀값 제거 확인, 계약 시험 24건.
+- 재검토(2인 조건부 승인) 후속: 결과 파일 비밀값 제거를 EXIT trap에도 넣음(중단 시), 공백 정규화된 비밀번호도 가림. Playwright 1.65 실측 — 비밀번호 칸에 값이 남은 채 단언이 실패하면 `PLAYWRIGHT_NO_COPY_PROMPT=1`이어도 `error-context.md`에 값이 남는다(제거 끔: 1파일), 제거 켬: 0파일. 제거가 최종 방어다.
 - 남은 것: 소유자가 자격 파일을 만든 뒤 n150에서 실제 6건 실행. 첫 실행 전 Manager frontend가 `disabled_reason` 표시가 들어간
   리비전(#641 이후)으로 배포돼 있어야 Telegram 사유 단언이 맞는다.
 

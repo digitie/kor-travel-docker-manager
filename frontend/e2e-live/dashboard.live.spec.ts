@@ -147,19 +147,23 @@ test('수집 경보 패널: 점검 항목·발송 상태가 운영 응답과 같
 
   // 외부 발송: 켜진 채널이 없으면 꺼져 있다는 사실과 Telegram이 보내지 않는 까닭을 숨기지 않는다.
   const delivery = panel.getByTestId('plane-alerts-delivery');
-  const enabled = data.notifiers.filter((notifier) => notifier.enabled);
-  if (enabled.length === 0) {
-    await expect(delivery).toContainText('외부 발송은 꺼져 있습니다');
-    const telegram = data.notifiers.find((notifier) => notifier.name === 'telegram');
-    expect(telegram, 'Telegram 발송 상태가 응답에 없습니다').toBeDefined();
-    expect(telegram?.disabled_reason, 'Telegram이 꺼져 있는데 까닭이 없습니다').toBeTruthy();
-    await expect(delivery).toContainText(`Telegram은 보내지 않습니다 — ${telegram?.disabled_reason}`);
-  } else {
-    await expect(delivery).toContainText('외부 발송: ');
-    for (const notifier of enabled) {
-      if (notifier.last_error) await expect(delivery).toContainText(`최근 실패 ${notifier.last_error}`);
+  await expect(async () => {
+    const notifiers = latest().notifiers;
+    const text = await delivery.innerText();
+    const enabled = notifiers.filter((notifier) => notifier.enabled);
+    if (enabled.length === 0) {
+      expect(text).toContain('외부 발송은 꺼져 있습니다');
+      const telegram = notifiers.find((notifier) => notifier.name === 'telegram');
+      expect(telegram, 'Telegram 발송 상태가 응답에 없습니다').toBeDefined();
+      expect(telegram?.disabled_reason, 'Telegram이 꺼져 있는데 까닭이 없습니다').toBeTruthy();
+      expect(text).toContain(`Telegram은 보내지 않습니다 — ${telegram?.disabled_reason}`);
+    } else {
+      expect(text).toContain('외부 발송: ');
+      for (const notifier of enabled) {
+        if (notifier.last_error) expect(text).toContain(`최근 실패 ${notifier.last_error}`);
+      }
     }
-  }
+  }).toPass({ timeout: 30_000 });
   // 발송 문구에 Telegram bot 토큰 값 모양(숫자:문자열)이 보이지 않는다(변수 이름은 사유로 보일 수 있다).
   expect(await delivery.innerText()).not.toMatch(/\d{6,}:[A-Za-z0-9_-]{30,}/);
 
