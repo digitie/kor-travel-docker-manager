@@ -76,3 +76,6 @@ win_venv/
 .ktdm-runtime-pins.json
 config/runtime-pins.json
 config/runtime-pins.[0-9a-f]*.json
+
+# 운영 live e2e 결과(frontend/playwright.live.config.ts — 실패 스크린샷에 운영 화면이 담긴다)
+frontend/test-results/

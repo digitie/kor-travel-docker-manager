@@ -1,3 +1,26 @@
+## 2026-11-25 — 운영 대시보드 live e2e를 n150에서 root 자격 파일로 실행
+
+- 출처: 소유자 결정(2026-11-25) — 로그인이 필요한 화면도 운영 배포 뒤 n150 live e2e로 자동 확인한다. PinVi admin live e2e의
+  Docker runner 방식을 따르되 자격은 root 소유 0600 파일(기본 `/root/.ktdm-e2e.env`)에 둔다.
+- 인증 구조 확인: 단일 관리자(`KTDM_ADMIN_USERNAME` + `KTDM_ADMIN_PASSWORD_HASH`, 세션 `sub` 일치)라 e2e 전용 계정을 만드는 정식
+  경로가 없다. 운영 변경 방지는 live fixture가 맡는다(로그인·로그아웃 밖 GET·HEAD 아닌 요청을 끊고 시험 실패). e2e 전용 읽기
+  비밀번호는 보안 영향만 검토해 제안으로 남겼다(`docs/live-e2e.md` §1).
+- 추가: `scripts/n150-live-e2e.sh`(자격 파일 `sudo -n` 검사·읽기, 허용 키 3개, 값은 env 이름으로만 전달, `bash -x` 거부, 설정 고정·
+  인자 제한, 컨테이너에는 `frontend/`만·`npm ci --ignore-scripts`, Node 26.13.1 SHA-256 검증, 출력 가림, `~/gate-slot.sh` 경유,
+  `live_e2e_summary` 요약), `frontend/playwright.live.config.ts`(trace off, 쓰기 스펙은 `KTDM_LIVE_E2E_WRITE=1`만),
+  `frontend/e2e-live/` 읽기 전용 3건 × desktop·mobile — 로그인→원장·상태 WS(재연결 반복 없음)→로그아웃, 수집 경보 패널을 운영
+  응답과 대조(감시 생존·host·점검 항목 전부·role 연결 `N/60`·n150 공항 통계 "해당 없음"·외부 발송 꺼짐과 Telegram 사유),
+  무인증 차단.
+- 시험: `backend/tests/test_n150_live_e2e_runner.py`(22건 — xtrace·금지 인자·권한/소유자/디렉터리/심볼릭 링크/상대 경로 거부,
+  허용 외 키·형식·중복·필수 키·URL 모양, 값이 argv에 없음·frontend만 mount·쓰기 opt-in·host 검증, gate 없음, 모든 경우 출력에
+  비밀번호 없음). WSL Docker에서 root 0600 더미 자격으로 실제 러너를 돌려 `--list` 6건, 운영 공개 대시보드에 무인증 시험 2건
+  통과(로그인 없음), 로컬 가짜 backend + 실제 production 빌드 frontend에 6건 통과·Telegram 켜짐 분기 통과·host 불일치 시 실패
+  요약과 종료 코드 1, 로그에 비밀번호 없음을 확인했다. frontend type-check·lint·build 통과.
+- 적대 리뷰 2인(보안·정확성) 반영: 로그인 실패 시 Playwright `error-context.md` 접근성 스냅샷에 비밀번호가 평문으로 남는 결함(blocker) → `PLAYWRIGHT_NO_COPY_PROMPT=1`·제출 뒤 비밀번호 칸 비움·결과 글 파일 비밀값 제거. WebSocket 점검이 4401로 닫힌 소켓도 통과시키던 것 → 프레임 2개 이상·열린 상태 단언. `TOKEN` 금지 단언이 Telegram 사유(토큰 변수 이름)와 모순 → 토큰 값 모양 검사. 배포 직후 첫 평가 전 실패 → 최대 5분 대기. 60초 재조회 경합 → 마지막 응답 기준 재시도. 틀린 자격의 로그인 잠금 → globalSetup 사전 로그인 1회. 그 밖에 context 단위 변경 차단·service worker 차단, `IFS= read`·`--grep '수집 경보'` 문서 수정, 비-loopback http 거부, 경로 심볼릭 링크 거부, `/usr/bin/docker`, `--shm-size=1g`, 설치·브라우저 env에서 자격 제외, flock 직렬화, EXIT trap chown, 이전 보고서 비움. 로컬 가짜 backend에서 6건·틀린 자격 사전 중단(로그인 1회)·결과 파일 비밀값 제거 확인, 계약 시험 24건.
+- 재검토(2인 조건부 승인) 후속: 결과 파일 비밀값 제거를 EXIT trap에도 넣음(중단 시), 공백 정규화된 비밀번호도 가림. Playwright 1.65 실측 — 비밀번호 칸에 값이 남은 채 단언이 실패하면 `PLAYWRIGHT_NO_COPY_PROMPT=1`이어도 `error-context.md`에 값이 남는다(제거 끔: 1파일), 제거 켬: 0파일. 제거가 최종 방어다.
+- 남은 것: 소유자가 자격 파일을 만든 뒤 n150에서 실제 6건 실행. 첫 실행 전 Manager frontend가 `disabled_reason` 표시가 들어간
+  리비전(#641 이후)으로 배포돼 있어야 Telegram 사유 단언이 맞는다.
+
 ## 2026-11-25 — PinVi 메일(Resend) env 배선(`PINVI_RESEND_FROM_EMAIL`·`PINVI_RESEND_WEBHOOK_SECRET`·`PINVI_WEB_BASE_URL`)
 
 - 출처: PinVi #720. n150 `trip_invite` 7통이 Resend 403으로 5회씩 실패. compose가 `PINVI_RESEND_API_KEY`만 넘겨 PinVi가 개발용 기본 발신
