@@ -13,6 +13,7 @@
   `your_..._here` 자리표시자 거부(UI가 "키 없음"으로 볼 값을 재생성 전에 막는다). (3) 문서: 키 교체는 `activate-concierge`로 네 runtime
   재생성, Manager와 UI 이미지는 짝으로 되돌린다(새 Manager + 옛 이미지 `build` 모드 = 키 없음).
 - 배포 순서: 이 Manager를 먼저 설치한다(운영 `prebuilt`의 기존 키 포함 이미지는 그대로 동작) → 키 없이 빌드한 Concierge UI 이미지로 `activate-concierge`.
+- n150 적용(2026-11-26): 설치 전 읽기 전용 점검 — root 키 값이 새 형식 검사를 통과하고, 같은 값이 Map·PinVi의 `NEXT_PUBLIC_VWORLD_API_KEY`로 공개돼 C6c env_file 검사(ADR-56 3항)에 걸리지 않는다. `0fc669c` 설치·`pin rebind-execution`·`pin verify`=0(직전 `ac0e28c`, 롤백은 그 리비전 재설치 + Concierge UI도 T-212 이전 이미지로 짝 롤백). 이어 Concierge UI만 교체해 live UI e2e 91/91.
 
 ## 2026-11-25 — Transport core 적용 성공 뒤 post-deploy warm 자동 호출
 
