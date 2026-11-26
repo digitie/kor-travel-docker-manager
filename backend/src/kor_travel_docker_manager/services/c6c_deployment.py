@@ -234,7 +234,7 @@ _MAP_UI_PROTECTED_PATH = "/ops/datasets"
 _PINVI_ADMIN_PASSWORD_ENV = "KTDM_C6C_PINVI_ADMIN_PASSWORD"
 _CONCIERGE_UI_BACKEND_ORIGIN_ENV = "BACKEND_ORIGIN"
 _CONCIERGE_UI_BACKEND_API_KEY_ENV = "BACKEND_API_KEY"
-_CONCIERGE_UI_VWORLD_KEY_ENV = "NEXT_PUBLIC_VWORLD_SERVICE_KEY"
+_CONCIERGE_UI_VWORLD_KEY_ENV = "KTC_VWORLD_BROWSER_KEY"
 _CONCIERGE_UI_PUBLIC_API_BASE_ENV = "NEXT_PUBLIC_API_BASE_URL"
 _CONCIERGE_UI_ADMIN_USERNAME_ENV = "KTC_ADMIN_USERNAME"
 _CONCIERGE_UI_ADMIN_PASSWORD_HASH_ENV = "KTC_ADMIN_PASSWORD_HASH"
@@ -2575,6 +2575,10 @@ _PINVI_LOGIN_PAGE_CHUNK_PATTERN = re.compile(
     r'(?:\?[^"\']*)?["\'][^>]*>',
     re.IGNORECASE,
 )
+#: Concierge UI 브라우저 지도 키(T-212). Concierge `parseVWorldBrowserKey`와 같은 판정 — 이 밖의 값은 UI가 "키 없음"으로
+#: 보고 기동 경고 한 줄만 남기므로(T-211 같은 조용한 키 없는 지도), Manager가 재생성 전에 거부한다.
+_CONCIERGE_VWORLD_BROWSER_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+_CONCIERGE_VWORLD_BROWSER_KEY_PLACEHOLDER = re.compile(r"your_[a-z0-9_]*_here", re.IGNORECASE)
 _MAP_UI_PASSWORD_HASH_PATTERN = re.compile(
     r"^pbkdf2_sha256\$([0-9]+)\$[0-9A-Za-z_-]+\$[0-9A-Za-z_-]+$"
 )
@@ -3332,7 +3336,8 @@ def _concierge_ui_root_values_are_valid(values: Mapping[str, str]) -> bool:
         or any("\r" in value or "\n" in value for value in required.values())
         or not is_pbkdf2_sha256_password_hash(password_hash)
         or not backend_api_key.strip()
-        or not vworld_key.strip()
+        or _CONCIERGE_VWORLD_BROWSER_KEY_PATTERN.fullmatch(vworld_key) is None
+        or _CONCIERGE_VWORLD_BROWSER_KEY_PLACEHOLDER.fullmatch(vworld_key) is not None
     ):
         return False
     api_keys = values.get(_CONCIERGE_ROOT_API_KEYS_ENV, "")

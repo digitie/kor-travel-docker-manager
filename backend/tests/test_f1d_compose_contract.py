@@ -855,6 +855,47 @@ def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> N
         )
 
 
+def test_concierge_ui_renders_the_browser_map_key_as_a_runtime_env() -> None:
+    """Concierge T-212: UI는 브라우저 지도 키를 build가 아니라 실행 env `KTC_VWORLD_BROWSER_KEY`로 읽는다.
+
+    `NEXT_PUBLIC_*`는 `next build`가 번들에 박는 이름이라 실행 env로 넘겨도 `prebuilt` 이미지에는 효과가 없었다
+    (2026-11-18~25 지도 "키 없음"). 두 시작 모드 모두 같은 environment 블록을 쓰므로 렌더 결과 하나로 본다 —
+    `build` 모드도 키를 build 입력으로 쓰지 않고 start 뒤 서버가 읽는다. 원천 root 이름은 그대로다.
+    """
+
+    resolved = _resolved_compose(
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-ui",
+        strip_env_file_for=frozenset({"kor-travel-concierge-api"}),
+    )
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    ui_environment = services["kor-travel-concierge-ui"]["environment"]
+    assert isinstance(ui_environment, dict)
+    expected_value = _compose_contract_environment()["KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY"]
+    assert ui_environment["KTC_VWORLD_BROWSER_KEY"] == expected_value
+    assert not [name for name in ui_environment if "VWORLD" in name and name != "KTC_VWORLD_BROWSER_KEY"]
+    assert c6c_deployment_module._CONCIERGE_UI_ENV_SOURCES["KTC_VWORLD_BROWSER_KEY"] == (
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY"
+    )
+
+    # 옛 build 입력 이름으로 되돌린 Compose는 정확한 allowlist가 아니라서 재생성 전에 거부된다.
+    source_services = _source_compose()["services"]
+    assert isinstance(source_services, dict)
+    legacy = deepcopy(source_services)
+    legacy_environment = legacy["kor-travel-concierge-ui"]["environment"]
+    assert isinstance(legacy_environment, dict)
+    legacy_environment["NEXT_PUBLIC_VWORLD_SERVICE_KEY"] = legacy_environment.pop(
+        "KTC_VWORLD_BROWSER_KEY"
+    )
+    with pytest.raises(DeploymentContractError, match="exact canonical allowlist"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            legacy,
+            _compose_contract_environment(),
+            resolved=False,
+        )
+
+
 def test_resolved_map_dagster_services_never_touch_the_retired_metadata_database() -> None:
     """platform-topology.md §7 4단계: 옛 Map Dagster metadata DB의 storage migrate는 compose에 없고, Map Dagster
     서비스는 그것을 기다리지도 옛 metadata URL을 받지도 않는다 — storage는 공용 `dagster_shared`다."""

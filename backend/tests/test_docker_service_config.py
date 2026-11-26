@@ -821,7 +821,7 @@ def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> 
     assert environment == {
         "BACKEND_ORIGIN": _CONCIERGE_UI_BACKEND_ORIGIN,
         "BACKEND_API_KEY": _CONCIERGE_UI_BACKEND_API_KEY,
-        "NEXT_PUBLIC_VWORLD_SERVICE_KEY": _CONCIERGE_UI_VWORLD_KEY,
+        "KTC_VWORLD_BROWSER_KEY": _CONCIERGE_UI_VWORLD_KEY,
         "KTC_ADMIN_USERNAME": (
             "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME:?"
             "KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME must be explicitly set}"

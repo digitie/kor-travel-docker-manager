@@ -290,7 +290,8 @@ def env_file_secret_values_by_path(
        한 loader만 받는 값(공유 Dagster plane의 password를 code server만 받는다)은 다른 loader에게 새로 흘러간다.
     2. 같은 checkout 가족 중 파일을 읽지 않는 서비스(BFF UI)가 받는 값 가운데, 가족 **밖** 어느 서비스도 원본의
        어느 자리에서도 받지 않는 값 — 그 checkout만의 비밀이다.
-    3. 원본이 `NEXT_PUBLIC_*`에 두는 공개 값(VWorld browser key).
+    3. 원본이 `NEXT_PUBLIC_*`에 두는 공개 값(Map·PinVi 등의 VWorld browser key). Concierge UI 지도 키는 2026-11-26
+       (Concierge T-212)부터 실행 env `KTC_VWORLD_BROWSER_KEY`라 3이 아니라 2(UI만 받는 값)로 허용된다.
 
     가족은 경로가 뿌리를 둔 변수 **하나**(대개 `*_REPO_DIR`)를 build context나 `env_file` 경로로 쓰는 원본의
     서비스다. 경로의 변수가 하나가 아니거나, 가족의 build context·`env_file`이 다른 뿌리를 함께 쓰거나, 가족에

@@ -364,7 +364,8 @@ def test_concierge_env_file_allows_only_what_every_loader_or_the_ui_alone_receiv
 
     - 세 loader(API·MCP·code server) 모두: `API_KEYS`, RustFS 두 값.
     - 파일을 읽지 않는 UI만, 가족 밖 누구도 받지 않음: UI auth 세 값, BFF backend key.
-    - `NEXT_PUBLIC_*`로 공개: Concierge UI VWorld key, Map UI VWorld build arg.
+    - 파일을 읽지 않는 UI만 받음(T-212 실행 env `KTC_VWORLD_BROWSER_KEY`): Concierge UI VWorld key.
+    - `NEXT_PUBLIC_*`로 공개: Map UI VWorld build arg.
     """
 
     environment = _environment()

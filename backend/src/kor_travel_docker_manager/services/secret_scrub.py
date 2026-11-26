@@ -48,6 +48,10 @@ SENSITIVE_KEY_PARTS = (
     # 값(`true`)이 실패 출력 전체에서 치환된다. compose의 `*_KEY` 이름이 이 규칙에 걸리는지는
     # `test_every_compose_key_name_is_sensitive_unless_declared_public`이 본다.
     "PLANNER_KEY",
+    # Concierge UI 브라우저 지도 키(`KTC_VWORLD_BROWSER_KEY`, Concierge T-212) — 옛 이름 `NEXT_PUBLIC_VWORLD_SERVICE_KEY`는
+    # `SERVICE_KEY`에 걸렸지만 새 이름은 어느 조각에도 걸리지 않는다(2026-11-26). 브라우저로 가는 공개 값이어도
+    # Manager 화면·로그에는 원문을 싣지 않는다.
+    "BROWSER_KEY",
 )
 
 # key 전체를 가리는 대신 userinfo의 비밀번호 구간만 치환한다. `..._BASE_URL`처럼 비밀이 아닌 URL은

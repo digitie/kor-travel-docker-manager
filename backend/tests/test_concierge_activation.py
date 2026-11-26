@@ -134,7 +134,7 @@ def _canonical_tree(tmp_path: Path) -> tuple[Path, Path]:
         "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET='proxy-$#value-01234567890123456789012345'\n"
         "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS='false'\n"
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS='https://concierge.example.test'\n"
-        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY='vworld-$#legacy-key'\n"
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY='VWORLD-0123-browser_key'\n"
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL=''\n",
         mode=0o600,
     )
@@ -678,3 +678,57 @@ def test_prebuilt_requires_immutable_root_selector(tmp_path, monkeypatch):
     with pytest.raises(ConciergeActivationError, match="immutable sha256"):
         activate_canonical_concierge(project_root=root, compose_config_runner=_prebuilt_config,
                                      compose_up_runner=_must_not_run, require_root=False)
+
+
+@pytest.mark.parametrize("prebuilt", [False, True])
+def test_projection_passes_the_browser_map_key_as_a_runtime_env(tmp_path, monkeypatch, prebuilt):
+    """Concierge T-212: 두 시작 모드 모두 projection의 UI env에 실행 시 지도 키 이름 `KTC_VWORLD_BROWSER_KEY`가
+    root `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`에서 실린다 — 옛 build 입력 이름(`NEXT_PUBLIC_*`)은 없다."""
+
+    root = _prebuilt_tree(tmp_path) if prebuilt else _canonical_tree(tmp_path)[0]
+    monkeypatch.setattr(
+        c6c_module,
+        "_run_docker_query",
+        lambda command, **kwargs: activation_module.subprocess.CompletedProcess(
+            command, 0, json.dumps(_normal_ui_metadata())
+        ),
+    )
+    seen = []
+
+    def config(command, project_root, values):
+        projected = yaml.safe_load(Path(command[command.index("--file") + 1]).read_text())
+        seen.append(projected["services"]["kor-travel-concierge-ui"]["environment"])
+        runner = _prebuilt_config if prebuilt else _valid_config_runner
+        return runner(command, project_root, values)
+
+    activate_canonical_concierge(project_root=root, compose_config_runner=config,
+                                 compose_up_runner=_no_op_up_runner, require_root=False)
+    assert seen
+    for environment in seen:
+        assert environment["KTC_VWORLD_BROWSER_KEY"] == (
+            "${KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY:?"
+            "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY must be explicitly set}"
+        )
+        assert "NEXT_PUBLIC_VWORLD_SERVICE_KEY" not in environment
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "' '", '"vworld key"', "'vworld-$#key'", "'abc/def'", "your_vworld_browser_key_here", "YOUR_KEY_HERE"],
+)
+def test_activation_refuses_a_browser_map_key_the_ui_would_treat_as_missing(tmp_path, value):
+    """Concierge T-212: UI가 "키 없음"으로 볼 값(빈 값·공백·따옴표 안 공백·URL 문자·자리표시자)은 재생성 전에 거부한다 —
+    지도가 조용히 키 없이 뜨는 길(T-211)을 운영 경로에서 막는다. 거부 메시지에는 값이 없다."""
+
+    root, env_path = _canonical_tree(tmp_path)
+    text = env_path.read_text(encoding="utf-8").replace(
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY='VWORLD-0123-browser_key'",
+        f"KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY={value}",
+    )
+    assert f"KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY={value}\n" in text
+    _write(env_path, text, mode=0o600)
+    with pytest.raises(ConciergeActivationError, match="C6c contract") as raised:
+        activate_canonical_concierge(project_root=root, compose_config_runner=_valid_config_runner,
+                                     compose_up_runner=_must_not_run, require_root=False)
+    message = str(raised.value)
+    assert "vworld key" not in message and "abc/def" not in message and "your_" not in message.lower()

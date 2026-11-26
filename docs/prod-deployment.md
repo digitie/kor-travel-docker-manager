@@ -855,7 +855,17 @@ Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제�
 - UI credential source는 Manager root `.env`의 `KOR_TRAVEL_CONCIERGE_UI_*`와
   `KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY`뿐이다. backend key는
   `KOR_TRAVEL_CONCIERGE_API_KEYS` comma-list의 exact member여야 한다. browser에 필요한 지도 키는 전용
-  `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`로 분리한다.
+  `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`로 분리하고 UI 컨테이너 **실행 env** `KTC_VWORLD_BROWSER_KEY`로
+  넘긴다(Concierge T-212, 2026-11-26). UI 서버가 요청 때 읽어 로그인한 관리자 화면에 내려주므로 build 입력이
+  아니다. 키 교체는 root `.env` 값을 바꾼 뒤 `activate-concierge`로 Concierge 네 runtime을 다시 만드는 것이다(재빌드
+  불필요, 재생성 범위는 아래대로 넷 전체 — `docker restart`로는 새 env가 들어가지 않는다. `build` 모드는 시작 때
+  `next build`를 다시 하므로 느리다). 값은 영숫자·`-`·`_`만 받고 `your_..._here` 자리표시자는 거부한다 — Concierge가
+  "키 없음"으로 볼 값을 재생성 전에 막는다. 옛 이름 `NEXT_PUBLIC_VWORLD_SERVICE_KEY`는 `next build`가 번들에 박는
+  이름이라 `prebuilt` 이미지에 효과가 없었고(2026-11-18~25 지도 "키 없음"), C6c 정확 allowlist가 이제 그 이름을 거부한다.
+  **Manager와 Concierge UI 이미지는 짝으로 움직인다**: 이 Manager(새 이름)에 T-212 이전 UI 이미지를 `prebuilt`로 쓰면
+  build 때 박힌 키로 동작하지만, `build` 모드로 쓰면 컨테이너 안 재빌드가 옛 이름을 찾아 지도가 "키 없음"이 된다. 반대로
+  옛 Manager에 T-212 이후 이미지를 쓰면 두 모드 모두 "키 없음"이다. 되돌릴 때는 둘을 함께 되돌린다(또는 Manager는 두고
+  옛 이미지를 `prebuilt`로만).
 - API의 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
   `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`도 root authority다. 둘 중 하나가 local/false이면 C6c 검증이
   API가 unauthenticated default로 내려가는 것을 막기 위해 재생성 전에 중단한다.
@@ -897,7 +907,8 @@ C6c는 raw/resolved 양쪽의 모드별 명령·기존 root 인증/allowlist·lo
 태그·일반 Node 이미지·다른 명령/workdir/entrypoint override는 거부한다.
 이 metadata 검사는 `.next` 빌드 성공이나 browser용 공개 입력의 일치를 증명하지 않으므로,
 운영자는 선택 revision의 정상 빌드·BUILD_ID·공개 입력·native 부품 검증을 먼저 마쳐야 한다.
-시작 시 재컴파일하지 않아 공개 입력을 바꾸려면 정상 이미지를 새로 빌드해야 한다.
+시작 시 재컴파일하지 않아 공개 build 입력(`NEXT_PUBLIC_API_BASE_URL`)을 바꾸려면 정상 이미지를 새로 빌드해야 한다.
+지도 키는 build 입력이 아니어서(위 UI credential 항목) 두 모드 모두 실행 env로 들어간다.
 API/MCP/Dagster 이미지 선택은 그대로 유지할 수 있지만 재생성 범위는 여전히 네 runtime 전체다.
 별도 override·UI 단독 적용·자동 이미지 생성/retag는 없고, `build`로 되돌리면 기존 시작 동작을 쓴다.
 이 옵션을 사용하려면 해당 SDK 소스가 포함된 trusted Manager를 먼저 설치한다.
