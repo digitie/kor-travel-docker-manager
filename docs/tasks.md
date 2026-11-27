@@ -1,3 +1,12 @@
+## 2026-11-27 — PinVi Google 회원가입·로그인 OAuth env 배선
+
+- [x] compose: `PINVI_GOOGLE_OAUTH_CLIENT_ID`·`PINVI_GOOGLE_OAUTH_CLIENT_SECRET`·`PINVI_OAUTH_CALLBACK_BASE_URL`(pinvi-api만), `.env.example` 세 빈 자리, 렌더 시험.
+- [ ] **n150 적용**: Manager 설치 → pinned 재구축으로 pinvi-api 재생성 → providers google `enabled: true`·start의 `redirect_uri` 확인.
+- [ ] **소유자**: 실제 Google 로그인 1회, Google Cloud 콘솔 승인된 리디렉션 URI 확인(docker-management.md 7.5c).
+- [ ] Naver·Kakao 로그인: 키를 받을 때 배선(Kakao REST key는 Kakao Local도 켠다).
+- [ ] 후속(PinVi): callback base 형식 validator(https·localhost 아님·끝 `/` 없음). Manager: `PINVI_RATE_LIMIT_CLIENT_IP_HEADER` 미배선 —
+  앞단 proxy 뒤에서 OAuth rate limit(IP당 분당 10)이 한 버킷으로 묶이는지 확인.
+
 ## 2026-11-26 — Concierge UI 지도 키를 실행 env 이름으로 (Concierge T-212)
 
 - [x] UI 컨테이너 env `NEXT_PUBLIC_VWORLD_SERVICE_KEY` → `KTC_VWORLD_BROWSER_KEY`(원천 root `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY` 그대로), C6c 정확 allowlist·projection·실제 `docker compose config` 렌더 시험.

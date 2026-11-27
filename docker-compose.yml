@@ -2275,6 +2275,21 @@ services:
       # localhost를 가리켰다(#720 읽기 전용 확인). 기본값은 그 앱 기본값과 같다(넘기기만 하고 동작은 바꾸지 않는다) — 수신자가 여는
       # 공개 origin을 root `.env`에 둔다.
       PINVI_WEB_BASE_URL: ${PINVI_WEB_BASE_URL:-http://localhost:12805}
+      # Google 회원가입·로그인(PinVi `app/api/v1/oauth.py`, 모바일 `mobile.py`). PinVi 자체 compose(`infra/docker-compose.app.yml`,
+      # PinVi #467)는 넘겼지만 배포가 이 compose로 옮겨 올 때 빠져, client id·secret이 둘 다 비어 `/auth/oauth/providers`가
+      # google `enabled: false`를 주고 web 로그인 화면이 Google 버튼을 숨겼다(2026-11-27). 비우면 그 상태 그대로다(기동은 막지
+      # 않는다). client id는 authorize URL에 실려 브라우저로 가는 공개 식별자라 가리지 않고, secret은 `SECRET` 조각으로 가린다.
+      PINVI_GOOGLE_OAUTH_CLIENT_ID: ${PINVI_GOOGLE_OAUTH_CLIENT_ID:-}
+      PINVI_GOOGLE_OAUTH_CLIENT_SECRET: ${PINVI_GOOGLE_OAUTH_CLIENT_SECRET:-}
+      # provider가 돌아오는 callback의 base — redirect_uri는 `<이 값>/auth/oauth/<provider>/callback`이다(PinVi API는 `/api/v1`
+      # prefix 없이 origin 루트에 라우터를 단다). callback은 세션 쿠키를 **이 host에만**(Domain 없이) 심으므로, web이 부르는
+      # API origin(pinvi-web 이미지에 구워지는 `NEXT_PUBLIC_PINVI_API_URL` = `PINVI_PUBLIC_API_URL`)과 같아야 로그인이 남는다
+      # — 그래서 기본값을 그 값에서 유도한다(정본 하나). 재정의할 때도 같은 origin이어야 하고, 끝 `/`는 붙이지 않는다(PinVi가
+      # 지우지 않아 `//auth/...`가 되어 Google이 `redirect_uri_mismatch`로 막는다). Google Cloud 콘솔의 승인된 리디렉션 URI와
+      # 글자까지 같아야 한다. 중첩 보간(`${A:-${B:-c}}`)은 설정 편집기의 "`${…}` 참조를 리터럴로 덮지 못한다" 보호
+      # (`docker_service._INTERPOLATED_VALUE_RE`·frontend `INTERPOLATED_VALUE_RE`)가 알아보지 못하는 형태다 — 비밀이 아닌
+      # 이름에만 쓴다.
+      PINVI_OAUTH_CALLBACK_BASE_URL: ${PINVI_OAUTH_CALLBACK_BASE_URL:-${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}}
       # PinVi 시스템 Telegram 봇 token(apps/api telegram_notify). 비우면 시스템 봇 알림은 skip.
       PINVI_TELEGRAM_BOT_TOKEN_DEFAULT: ${PINVI_TELEGRAM_BOT_TOKEN_DEFAULT:-}
       # 예약 알림 planner의 내부 경계(`/internal/telegram/plan`·`/plan/pending`, `X-Pinvi-Notification-Planner-Key`)를
