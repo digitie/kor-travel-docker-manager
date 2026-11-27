@@ -970,6 +970,34 @@ PinVi ETL `pinvi_email_outbox`는 `app.email_queue` 집계만 한다. 그래서 
 - 결박: `backend/tests/test_pinvi_resend_env_wiring.py`(렌더된 compose에서 값 도달·빈 값·web origin 기본값·pinvi-api 외 비수신·
   key·secret 가림·`.env.example` 빈 자리).
 
+### 7.5c PinVi Google 회원가입·로그인 OAuth (2026-11-27)
+
+PinVi web 로그인 화면은 `GET /auth/oauth/providers`가 `enabled: true`라고 답한 provider 버튼만 보인다. PinVi는 client id와
+secret이 **둘 다** 있어야 google을 켠다(`provider_configured`). OAuth start·callback(과 모바일 Google start)은 모두 `pinvi-api`
+라우터라 아래 이름은 `pinvi-api`**에만** 간다.
+
+- 2026-11-27 n150: root `.env`에 세 값이 있는데도 `pinvi-api-latest` env에 이름이 하나도 없어 Google 버튼이 사라졌다. PinVi 자체
+  compose(`infra/docker-compose.app.yml`, PinVi #467)는 넘겼지만, 배포가 이 compose로 옮겨 올 때 빠졌다.
+- `PINVI_GOOGLE_OAUTH_CLIENT_ID`(비밀 아님) — authorize URL에 실려 브라우저로 가는 공개 식별자라 가리지 않는다(어느 OAuth
+  client가 실렸는지 진단할 수 있어야 한다).
+- `PINVI_GOOGLE_OAUTH_CLIENT_SECRET`(비밀, `SECRET` 가림 조각).
+- `PINVI_OAUTH_CALLBACK_BASE_URL`(비밀 아님) — redirect_uri는 `<이 값>/auth/oauth/<provider>/callback`이다. PinVi API는 라우터를
+  `/api/v1` prefix 없이 origin 루트에 달므로 base에도 `/api/v1`를 붙이지 않는다. 브라우저가 여는 공개 **API** origin
+  (`https://pinvi-api.<도메인>`, 끝 `/` 없이)이어야 하고, Google Cloud 콘솔 OAuth client의 "승인된 리디렉션 URI"에
+  `https://pinvi-api.<도메인>/auth/oauth/google/callback`이 글자까지 같게 등록돼 있어야 한다(다르면 Google이
+  `redirect_uri_mismatch`로 막는다). compose 기본값은 PinVi 앱 기본값 `http://localhost:12801`이다(배선만, 동작 불변).
+- callback은 API host에 세션 쿠키(`pinvi_access`·`pinvi_refresh`, production `Secure`·`SameSite=Lax`)를 심고
+  `PINVI_WEB_BASE_URL`(7.5b)로 303한다. web은 `NEXT_PUBLIC_PINVI_API_URL`로 같은 API host를 직접 부르므로 이메일 로그인과 같은
+  쿠키를 쓴다 — web origin과 API origin은 같은 site여야 하고, API의 CORS(`PINVI_CORS_ALLOWED_ORIGINS`)에 공개 web origin이 있어야 한다.
+- Naver·Kakao 로그인(`PINVI_NAVER_OAUTH_CLIENT_ID/SECRET`, `PINVI_KAKAO_OAUTH_REST_API_KEY/CLIENT_SECRET`)은 아직 배선하지 않았다.
+  Kakao REST key는 Kakao Local 장소 검색도 켜므로 키를 받을 때 그 영향과 함께 따로 넣는다.
+- **켜기**: root `.env`에 값 → Manager 설치 → pinned 재구축으로 `pinvi-api`를 다시 만든다(7.5a와 같은 이유로
+  `service-release apply-core-candidate pinvi`는 실행 중 env를 보존해 새 이름이 들어가지 않는다). 재생성 전에 7.5b처럼 실행 중
+  env와 렌더 결과의 이름 집합·값 sha256을 비교해 OAuth 세 이름 밖의 차이가 없는지 본다. 뒤에 `/auth/oauth/providers`의 google
+  `enabled: true`와 `POST /auth/oauth/google/start`가 주는 authorize URL의 `redirect_uri`를 확인한다(실제 Google 로그인은 사람이 한다).
+- 결박: `backend/tests/test_pinvi_google_oauth_env_wiring.py`(렌더된 compose에서 값 도달·빈 값·callback 기본값·pinvi-api 외
+  비수신·secret 가림과 공개 값 보존·`.env.example` 빈 자리).
+
 ### 7.6 T-VN-M01 manual Feature 생성 credential
 
 manual Feature 생성은 특정 provider나 PinVi 전용 기능이 아니다. Manager `.env`의

@@ -1,3 +1,18 @@
+## 2026-11-27 — PinVi Google 회원가입·로그인 OAuth env 배선
+
+- 출처: 소유자 — PinVi Google 회원가입·로그인이 사라졌다. 읽기 전용 확인(env 이름·길이만, 값 미출력): root `.env`에
+  `PINVI_GOOGLE_OAUTH_CLIENT_ID`·`PINVI_GOOGLE_OAUTH_CLIENT_SECRET`·`PINVI_OAUTH_CALLBACK_BASE_URL` 세 값이 있는데 `pinvi-api-latest`
+  env에는 이름이 없었다. 공개 API의 `/auth/oauth/providers`가 google `enabled: false`라 web 로그인 화면이 버튼을 숨겼다.
+- 원인: PinVi 자체 compose(`infra/docker-compose.app.yml`, PinVi #467)는 세 이름을 넘겼지만, 배포가 Manager compose로 옮겨 올 때
+  빠졌다(Manager 이력에 그 이름이 한 번도 없다).
+- PinVi 원문 확인: provider는 client id·secret 둘 다 있어야 켜진다. redirect_uri는 `<callback base>/auth/oauth/<provider>/callback`
+  이고 API 라우터에 `/api/v1` prefix가 없다(공개 API origin에서 `/auth/oauth/providers` 200, `/api/v1/...` 404 실측). callback은 API
+  host에 세션 쿠키를 심고 `PINVI_WEB_BASE_URL`로 303한다 — web이 같은 API host를 직접 부르므로 이메일 로그인과 같은 쿠키다.
+- 배선: 세 이름을 pinvi-api에만 `${…:-}`(callback은 PinVi 앱 기본값 `http://localhost:12801`). 가림: secret은 기존 `SECRET` 조각,
+  client id·callback은 공개 값이라 가리지 않는다. C6c는 pinvi-api env를 정확 목록으로 묶지 않아 바꿀 것이 없다. Naver·Kakao는
+  root `.env`에 키가 없어 배선하지 않았다(Kakao REST key는 Kakao Local도 켜므로 키를 받을 때 따로).
+- 시험: `backend/tests/test_pinvi_google_oauth_env_wiring.py`(5건). 문서: docker-management.md 7.5c.
+
 ## 2026-11-26 — Concierge UI 지도 키를 실행 env 이름으로 (Concierge T-212)
 
 - 출처: Concierge가 브라우저 지도 VWorld 키를 build arg 대신 UI 서버 실행 env `KTC_VWORLD_BROWSER_KEY`에서 읽게 바뀌었다
