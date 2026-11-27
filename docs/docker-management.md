@@ -998,7 +998,8 @@ secret이 **둘 다** 있어야 google을 켠다(`provider_configured`). OAuth s
 - **켜기**: root `.env`에 값 → Manager 설치 → pinned 재구축으로 `pinvi-api`를 다시 만든다(7.5a와 같은 이유로
   `service-release apply-core-candidate pinvi`는 실행 중 env를 보존해 새 이름이 들어가지 않는다). 재생성 전에 7.5b처럼 실행 중
   env와 렌더 결과의 이름 집합·값 sha256을 비교해 OAuth 세 이름 밖의 차이가 없는지 본다. 비밀이 아닌 두 값
-  (`PINVI_OAUTH_CALLBACK_BASE_URL`을 재정의했다면 그 값, `PINVI_PUBLIC_API_URL`)이 같은 origin이고 끝 `/`가 없는지도 본다.
+  (`PINVI_OAUTH_CALLBACK_BASE_URL`을 재정의했다면 그 값, `PINVI_PUBLIC_API_URL`)이 같은 origin이고 끝 `/`가 없는지도 본다
+  (callback을 비우면 `PINVI_PUBLIC_API_URL`이 그대로 base가 되므로 끝 `/` 금지는 그 값에도 걸린다).
   뒤에 `/auth/oauth/providers`의 google `enabled: true`와, `POST /auth/oauth/google/start`(body `{"mode":"login","return_to":"/"}`)가
   주는 authorize URL의 `redirect_uri`를 확인한다. start는 호출마다 운영 DB에 OAuth state 행 1개(TTL 600초)를 만들고 OAuth rate
   limit 버킷을 쓰므로 한 번만 부른다. 실제 Google 로그인은 사람이 한다 — Google 콘솔의 OAuth 동의 화면이 "테스트" 상태면 등록된
