@@ -1,7 +1,7 @@
 ## 2026-11-27 — PinVi Google 회원가입·로그인 OAuth env 배선
 
 - [x] compose: `PINVI_GOOGLE_OAUTH_CLIENT_ID`·`PINVI_GOOGLE_OAUTH_CLIENT_SECRET`·`PINVI_OAUTH_CALLBACK_BASE_URL`(pinvi-api만), `.env.example` 세 빈 자리, 렌더 시험.
-- [ ] **n150 적용**: Manager 설치 → pinned 재구축으로 pinvi-api 재생성 → providers google `enabled: true`·start의 `redirect_uri` 확인.
+- [x] **n150 적용**(2026-11-27): Manager `311853a` 설치(`pin verify`=0, 직전 `0fc669c`) → 같은 pair(Map `6beaae7d`·PinVi `1ed42639`) pinned 재구축(회전 건너뜀, D1 40/40·D2 11 passed) → pinvi-api env에 세 이름, providers google `enabled: true`, start `redirect_uri` = 공개 API origin의 `/auth/oauth/google/callback`, Google authorize가 로그인 화면까지 진행(redirect_uri 오류 없음), web 로그인 화면에 "Google로 계속하기".
 - [ ] **소유자**: 실제 Google 로그인 1회, Google Cloud 콘솔 승인된 리디렉션 URI 확인(docker-management.md 7.5c).
 - [ ] Naver·Kakao 로그인: 키를 받을 때 배선(Kakao REST key는 Kakao Local도 켠다).
 - [ ] 후속(PinVi): callback base 형식 validator(https·localhost 아님·끝 `/` 없음). Manager: `PINVI_RATE_LIMIT_CLIENT_IP_HEADER` 미배선 —

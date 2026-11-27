@@ -12,6 +12,8 @@
   client id·callback은 공개 값이라 가리지 않는다. C6c는 pinvi-api env를 정확 목록으로 묶지 않아 바꿀 것이 없다. Naver·Kakao는
   root `.env`에 키가 없어 배선하지 않았다(Kakao REST key는 Kakao Local도 켜므로 키를 받을 때 따로).
 - 시험: `backend/tests/test_pinvi_google_oauth_env_wiring.py`(6건). 문서: docker-management.md 7.5c.
+- n150 적용(2026-11-27): 설치 전 읽기 전용 점검 — 설치본 compose 렌더와 실행 중 env 비교에서 pinvi-api 차이는 OAuth 세 이름 추가뿐(나머지 서비스는 설치 전 기준선과 같음), callback 재정의 값과 `PINVI_PUBLIC_API_URL`·web 번들의 API origin이 같은 https origin.
+  `311853a` 설치·`pin rebind-execution`·`pin verify`=0 → 같은 pair pinned 재구축(chain17 회전 건너뜀, rebuild committed, D1 40/40·D2 11 passed). 확인: providers google `enabled: true`, start의 `redirect_uri` 일치·PKCE S256, Google authorize가 로그인 화면까지 진행, web 로그인 화면 버튼 표시. 실제 Google 로그인 1회는 소유자 몫. 롤백: `0fc669c` 재설치·rebind 뒤 같은 pair pinned 재구축.
 - 적대 리뷰 2인(보안·OAuth 흐름/운영) 반영: callback 쿠키는 callback host에만 붙어 web이 부르는 API origin(`NEXT_PUBLIC_PINVI_API_URL`
   = `PINVI_PUBLIC_API_URL`)과 같아야 한다 — 기본값을 앱 기본값(`localhost`, web fallback `127.0.0.1`과 다른 host)에서
   `PINVI_PUBLIC_API_URL` 유도로 바꾸고 web과 같은 원천·fallback을 시험으로 묶었다. 끝 `/` 금지, start 호출의 부작용(state 행·rate
