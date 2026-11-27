@@ -1,3 +1,22 @@
+## 2026-11-28 — odroid 공용 Dagster 용량: 전역 5→6, weather location 3→4(ADR-69)
+
+- 출처: weather `W-EXPORT-PREBUILT-CAPACITY-20261126`. 소유자 승인 — A3 export 사전 구성(`weather_export_prebuild_job`)이 우선순위 10
+  뒤에도 queue에서 기다렸다(p75 189초·최대 579초). 시뮬레이션 예상 적중 19% → weather 4 22% → weather 4·전역 6 29%.
+- 운영 읽기 전용 확인(2026-11-28 22:00 KST): odroid daemon·webserver는 2026-10-26 instance 파일(`a7d907c4…`)을 붙이고 있다 —
+  `max_concurrent_runs` 5, weather 3·transport 3·geo 1, `dequeue_interval_seconds` 30. 설치된 Manager(`299c984`)의 `show`는 다른 파일
+  (`eea24b35…`, max 5)을 가리킨다 — plane은 그 뒤 수렴되지 않았다. 그래서 이 변경을 적용하는 수렴은 main에 쌓인 다른 instance 변경
+  (#634 queue 재시도·INFO 로그, #643 공정성 등)도 함께 싣는다.
+- 변경: `config/docker-targets.yml` `hosts.odroid` 두 값과 근거 주석. 기본 `dagster.yaml`·n150은 불변. 시험
+  `test_every_location_cap_is_below_its_host_global_budget`·`test_committed_odroid_tunings_are_explicit_and_n150_inherits`의 기대값,
+  [dagster-tenant-fairness.md](dagster-tenant-fairness.md) §2 값·위험·배포 뒤 관측과 §3 weather 예외(`weather_export_prebuild_job` 10)
+  기록, ADR-69, daemon-pool-adoption 연결 예산(odroid run worker 약 10→12).
+- 렌더 비교(Manager `_host_configuration`): odroid digest `e8b5e65b2ae1f068` → `019a64ebd9093205`(전역 6·weather 4만 바뀜),
+  n150 `1e05358ad1da0763` 그대로.
+- 시험: ruff, `test_dagster_shared_config.py`·`test_shared_dagster_host_instance.py`·`test_dagster_runtime_limits.py`·
+  `test_concierge_shared_dagster.py`·`test_dagster_shared_workspace_is_derived.py` 173 passed(WSL).
+- 위험(소유자 수용): odroid load 21~27·메모리(weather code-server 2.5 GB 상한을 최대 4 run이 나눔)·provider 동시 호출.
+  배포 뒤 볼 것은 fairness 문서 §2.
+
 ## 2026-11-27 — Map TourAPI 상세 호출 예산 env 배선(Map ADR-125)
 
 - 출처: Map ADR-125(kor-travel-map PR #1564·#1565) — TourAPI `detailCommon2`·`detailIntro2`·`detailImage2`·`detailPetTour2`·

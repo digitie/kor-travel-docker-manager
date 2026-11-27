@@ -34,11 +34,26 @@ count ≥ limit). location 상한이 작을수록 이 문턱이 낮다(Map 10이
 | 호스트 | 전역 | location 상한 | 정본 |
 |---|---|---|---|
 | n150 | 6 | Map 4 · PinVi 2 · Concierge 2 | `config/dagster-shared/dagster.yaml`(n150은 override 없이 기본을 쓴다) |
-| odroid | 5 | transport 3 · weather 3 · geo 1 | `config/docker-targets.yml`의 `hosts.odroid`(transport는 기본 파일 값) |
+| odroid | 6 | transport 3 · weather 4 · geo 1 | `config/docker-targets.yml`의 `hosts.odroid`(transport는 기본 파일 값) |
 
 - n150: 2026-11-24 전에는 map·pinvi 10이었다. Map 전체 적재 하나가 6을 다 차지하면 PinVi·Concierge run이 큐에 남았다.
   Map 4면 Map이 몰려도 2자리가 다른 테넌트에 남는다. PinVi 2는 Concierge와 같은 크기다.
-- odroid: 세 값 모두 이미 전역 5보다 작아 바꾸지 않았다(2026-10-26 운영 대조로 보존한 튜닝). 값별 근거는 `hosts.odroid` 주석.
+- odroid: 2026-11-24에는 세 값 모두 이미 전역 5보다 작아 바꾸지 않았다(2026-10-26 운영 대조로 보존한 튜닝). 값별 근거는 `hosts.odroid` 주석.
+- odroid 2026-11-28 소유자 승인(ADR-69): **전역 5→6, weather 3→4**. transport 3·geo 1은 그대로다. weather 4 < 전역 6이라 규칙을
+  지키고, weather가 몰려도 2자리가 transport·geo에 남는다(전에는 3 중 2). location 안 업무 상한(`external_weather` 2·
+  `external_weather_slow` 1)도 4보다 작아 둘이 함께 돌아도 1자리가 지역·특보·export 사전 구성 run에 남는다.
+  - 왜: weather A3 export 사전 구성(`weather_export_prebuild_job`, cron `23,38`)이 queue에서 기다렸다 — 우선순위 10(아래 §3 예외)을
+    단 뒤에도 생성→시작 p75 189초·최대 579초(시뮬레이션). weather 3자리가 긴 run(단기예보 1~2시간, slow 외부 sweep, 일별 보존)에
+    잡히고 전역 5가 찼다(daemon tick 2,205번 중 1,034번 "Maximum is 5", 2026-11-25~26 odroid 읽기 전용 실측). 운영 이력 재현
+    시뮬레이션의 예상 적중: 우선순위 10만 19% → + weather 4면 22% → + weather 4·전역 6이면 29%(시작 지연 p75 42초).
+    근거는 weather 저장소 `docs/export-prebuilt-pages.md` "결정과 적용"·`docs/tasks.md` `W-EXPORT-PREBUILT-CAPACITY-20261126`.
+  - 받아들인 위험: 실측 동안 odroid load average 21~27(4코어)이었고, 동시 run이 하나 늘면 외부 provider 동시 호출과 메모리 압박도
+    는다. weather code-server는 run worker까지 한 컨테이너에서 돌아 메모리 상한 2.5 GB(운영 실측 2026-11-28 — 손잡이는 root `.env`
+    `KTDM_WEATHER_CODE_SERVER_MEM_LIMIT`, compose 기본 4g)를 최대 4 run이 나눈다. 소유자가 이를 알고 승인했다.
+  - 배포 뒤 볼 것(1~2주): odroid load average·swap·OOM kill(특히 weather code-server 2.5 GB 상한 — `docker inspect`의
+    `State.OOMKilled`, run 실패 사유), weather 외부 provider 429·한도 초과 응답, transport·geo run의 queue 대기(생성→시작)가
+    전보다 늘지 않는지, 공용 role 연결 수(수집 경보 `dagster_role_connections`, run worker 몫 5→6 run), weather 쪽
+    `W-EXPORT-PREBUILT-ACCEPT-20261126` 적중률. 나빠지면 `hosts.odroid`의 두 값을 되돌리는 PR → 같은 배포 절차다.
 - location 안의 업무 상한(`kortravelweather/run_group`·`kortraveltransport/run_group`·`kortravelcommon/job`·
   `kor_travel_map.feature_update_request_id`)은 테넌트 정책이지만 **그 location 상한보다 작아야 한다** — 같으면 그 업무 하나가
   location 몫을 다 차지한다(`test_in_location_caps_leave_room_inside_their_location`). 그래서 Map 관리자 요청 worker 상한을
@@ -83,7 +98,7 @@ count ≥ limit). location 상한이 작을수록 이 문턱이 낮다(Map 10이
 |---|---|
 | transport | 적용(실시간 10·유가 5·나머지 0) — transport DAGSTER-RUNTIME-PRIORITY-20261124. 다른 것 하나: `reference_export_prepare_job`(요청 실행 export) 5 — 규칙상 0, 확인 후속(`docs/tasks.md`) |
 | Map | 적용 PR(state job·feature schedule) |
-| weather | 적용 PR |
+| weather | 적용(weather `JOB_PRIORITIES`). 예외 하나: `weather_export_prebuild_job`(A3 export 사전 구성, cron `23,38`) 10 — 규칙상 export라 0이지만 Map 순회 전에 끝나야 적중하므로 소유자가 10으로 정했다(2026-11-26, weather PR #312·`W-EXPORT-PREBUILT-TIMING-20261125`). weather 시험 `OWNER_EXCEPTIONS`가 이 하나만 허용한다 |
 | PinVi·Concierge·geo | 미적용(0) — 각 저장소 후속 |
 
 ## 4. 한계

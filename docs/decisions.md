@@ -2170,3 +2170,46 @@ role의 연결 수를 보는 수단도 없었다.
 
 - (open) n150 적용(부모): 설치 → db-init one-shot → `rolconnlimit` 60 확인.
 - (open) odroid 적용(Codex): host compose db-init의 리터럴 45를 고친 뒤 같은 one-shot.
+
+## ADR-69: odroid 공용 Dagster 용량 — 전역 5→6, weather location 3→4 (weather export 사전 구성 대기)
+
+- 상태: accepted — 소스 반영, 운영 적용 전(소유자 배포)
+- 날짜: 2026-11-28
+- 결정자: 소유자(값과 위험 수용), 구현은 Claude
+
+### 컨텍스트
+
+weather A3 export 사전 구성(`weather_export_prebuild_job`, cron `23,38`)은 Map 순회 전에 끝나야 적중한다. weather가 우선순위를
+0→10으로 올렸지만(weather PR #312, ADR-65 규칙의 예외 — [dagster-tenant-fairness.md](dagster-tenant-fairness.md) §3) 생성→시작
+p75 189초·최대 579초(시뮬레이션)로 남았다. 우선순위는 줄 순서만 바꾸고, weather 3자리가 긴 run(단기예보 1~2시간, slow 외부
+sweep, 일별 보존)에 잡히거나 전역 5가 차면 슬롯이 빌 때까지 기다린다(odroid daemon tick 2,205번 중 1,034번 "Maximum is 5",
+2026-11-25~26 읽기 전용 실측). 운영 이력 재현 시뮬레이션의 예상 적중: 우선순위 10만 19%, + weather 4면 22%, + weather 4·전역 6이면
+29%(시작 지연 p75 42초). 근거는 weather 저장소 `docs/export-prebuilt-pages.md` "결정과 적용"과 `W-EXPORT-PREBUILT-CAPACITY-20261126`.
+
+### 결정
+
+1. odroid `hosts.odroid.dagster_max_concurrent_runs` 5→6, `dagster/code_location=kortravelweather_dagster.definitions` 3→4.
+   transport 3·geo 1, weather 업무 상한(`external_weather` 2·`external_weather_slow` 1)은 그대로다. n150과 기본 `dagster.yaml`은
+   바꾸지 않는다(n150 digest 무변화).
+2. ADR-65 규칙은 그대로 지킨다: 모든 location 상한 < 전역(4 < 6, 3 < 6, 1 < 6), location 안 업무 상한 < 그 location 상한(2·1 < 4).
+
+### 근거
+
+- 두 값을 함께 올려야 29%에 닿는다. weather만 4로 올리면 전역 5에서 weather가 4를 쓸 때 다른 테넌트 몫이 1로 줄고(전에는 2),
+  전역 6이면 weather가 몰려도 transport·geo에 2자리가 남는다 — 다른 테넌트 몫은 지금과 같다.
+- 기본 파일이 아니라 호스트 override만 바꾸므로 n150 plane은 다시 만들어지지 않는다.
+
+### 결과(부정)·잃는 것
+
+- odroid(4코어, RAM 7.5 GiB)는 실측 동안 load average 21~27이었다. 동시 run이 하나 늘면 CPU·메모리·공용 PG 부하와 외부 provider
+  동시 호출이 는다. weather code-server는 run worker까지 한 컨테이너라 메모리 상한 2.5 GB를 최대 4 run이 나눈다(OOM이면 그 컨테이너의
+  run이 함께 실패한다). 공용 role 연결의 run worker 몫이 약 10→12다(한도 60, [daemon-pool-adoption.md](daemon-pool-adoption.md)).
+  소유자가 이 위험을 알고 승인했다.
+- 적용하면 odroid instance digest가 바뀌어 daemon·webserver(그리고 같은 파일을 소비하는 code-server)가 다시 만들어진다.
+
+### 후속
+
+- (open) odroid 적용(소유자): Manager 설치 → `dagster-instance-config show --json`(`max_concurrent_runs` 6) → `dagster-plane converge
+  --dry-run`/`--confirm`([prod-deployment.md](prod-deployment.md) §8.2).
+- (open) 배포 뒤 1~2주 관측: load·swap·OOM kill, provider 429, transport·geo queue 대기, role 연결 수, weather 적중률
+  (`W-EXPORT-PREBUILT-ACCEPT-20261126`). 나빠지면 두 값을 되돌리는 PR.

@@ -199,19 +199,18 @@ db-init은 양의 정수가 아니거나 instance의 비-superuser 자리(`max_c
 |---|---|---|
 | (a) daemon primary QueuePool | dev0 6 → **dev2 12** | dev0 12 → **dev2 24**(상한) |
 | (b) webserver(`optimize_for_webserver` pool_size 1·overflow 20 ×3 engine) | 3 | 6(이론 상한 63 — 동시 요청 수에 묶임) |
-| (c) run worker(NullPool — 쓰는 동안만) | 0 | n150 전역 6 run × 2 ≈ 12, odroid 5 run ≈ 10 |
+| (c) run worker(NullPool — 쓰는 동안만) | 0 | n150 전역 6 run × 2 ≈ 12, odroid 6 run ≈ 12(2026-11-28 5→6, ADR-69 — 전에는 ≈ 10) |
 | (d) daemon 임시 start_run instance(NullPool) | 0 | 3 |
 | (e) code-server의 sensor·schedule 평가가 `context.instance`를 쓸 때(NullPool) | 0 | 수 개 — 세지 않음 |
 | (f) multiprocess executor의 step 하위 프로세스 | 0 | run당 2를 넘을 수 있음 — 세지 않음 |
 
 - 상주: dev0 약 9(2026-11-24 n150 실측 이 role 연결 8, 전부 idle) → dev2 약 15. 격리 PG 실측(아래) daemon+webserver 상주 9는 빈
   workspace라 primary pool이 덜 찬 값이다.
-- 바쁜 시간 동시 최악: (a)24 + (b)6 + (c)12 + (d)3 ≈ **45**(n150; odroid는 (c)10이라 ≈43) — 옛 한도 45에 닿았다. (e)(f)를 세면
+- 바쁜 시간 동시 최악: (a)24 + (b)6 + (c)12 + (d)3 ≈ **45**(n150; odroid도 2026-11-28 전역 6부터 (c)12라 ≈45, 전에는 ≈43) — 옛 한도 45에 닿았다. (e)(f)를 세면
   더 늘 수 있다. 넘치면 PostgreSQL이 새 접속을 `too many connections for role`로 거절하고 그때 접속하던 쪽(run worker면 run 실패)이
   맞는다. daemon pool이 24를 모두 쓰는 것은 sensor·schedule worker(각 4)와 run coordinator·backfill·heartbeat가 한 engine에 동시에
   몰릴 때뿐이라 흔하지 않지만, 0이라고 할 수 없다.
-- 소유자 결정(2026-11-25): pool은 Common 기본(24)을 그대로 두고 **role 한도를 60으로** 올린다(②). 최악 45는 60의 75%, odroid 43은
-  72%다 — 아래 수집 경보의 주의선(80%) 밑이고, (e)(f)가 몇 개 더해지면 주의선에 닿는다. 그래도 넘치는 징후가 보이면
+- 소유자 결정(2026-11-25): pool은 Common 기본(24)을 그대로 두고 **role 한도를 60으로** 올린다(②). 최악 45는 60의 75%(odroid도 전역 6부터 같다, 전에는 43·72%)다 — 아래 수집 경보의 주의선(80%) 밑이고, (e)(f)가 몇 개 더해지면 주의선에 닿는다. 그래도 넘치는 징후가 보이면
   ① `KOR_TRAVEL_DAGSTER_DAEMON_POOL_SIZE=3`·`_MAX_OVERFLOW=3`(상한 18)이 남은 수단이다.
 - **관측**: 수집 경보(plane watchdog) 규칙 `dagster_role_connections` — 이 role의 client 연결 수 / 한도가 최근 3회 평가(약 4~6분) 연속
   80% 이상이면 주의, 95% 이상이면 위험. `/metrics`에 `ktdm_dagster_role_connections`·`_connection_limit`·`_connection_ratio{role}`와
