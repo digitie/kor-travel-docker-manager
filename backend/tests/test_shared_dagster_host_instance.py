@@ -390,7 +390,7 @@ def test_prepare_never_repairs_an_existing_unsafe_directory(host):
 
 _PRESERVED_TAG_LIMITS = [
     {"key": "dagster/code_location", "value": "kortravelgeo_dagster.definitions", "limit": 1},
-    {"key": "dagster/code_location", "value": "kortravelweather_dagster.definitions", "limit": 3},
+    {"key": "dagster/code_location", "value": "kortravelweather_dagster.definitions", "limit": 4},
     {"key": "kortravelweather/run_group", "value": "external_weather", "limit": 2},
     {"key": "kortravelweather/run_group", "value": "external_weather_slow", "limit": 1},
 ]
