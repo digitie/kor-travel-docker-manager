@@ -2282,9 +2282,12 @@ services:
       PINVI_GOOGLE_OAUTH_CLIENT_ID: ${PINVI_GOOGLE_OAUTH_CLIENT_ID:-}
       PINVI_GOOGLE_OAUTH_CLIENT_SECRET: ${PINVI_GOOGLE_OAUTH_CLIENT_SECRET:-}
       # provider가 돌아오는 callback의 base — redirect_uri는 `<이 값>/auth/oauth/<provider>/callback`이다(PinVi API는 `/api/v1`
-      # prefix 없이 origin 루트에 라우터를 단다). 브라우저가 여는 공개 **API** origin(web origin 아님)을 root `.env`에 두고, Google
-      # Cloud 콘솔의 승인된 리디렉션 URI와 글자까지 같아야 한다. 기본값은 PinVi 앱 기본값과 같다(배선만, 동작 불변).
-      PINVI_OAUTH_CALLBACK_BASE_URL: ${PINVI_OAUTH_CALLBACK_BASE_URL:-http://localhost:12801}
+      # prefix 없이 origin 루트에 라우터를 단다). callback은 세션 쿠키를 **이 host에만**(Domain 없이) 심으므로, web이 부르는
+      # API origin(pinvi-web 이미지에 구워지는 `NEXT_PUBLIC_PINVI_API_URL` = `PINVI_PUBLIC_API_URL`)과 같아야 로그인이 남는다
+      # — 그래서 기본값을 그 값에서 유도한다(정본 하나). 재정의할 때도 같은 origin이어야 하고, 끝 `/`는 붙이지 않는다(PinVi가
+      # 지우지 않아 `//auth/...`가 되어 Google이 `redirect_uri_mismatch`로 막는다). Google Cloud 콘솔의 승인된 리디렉션 URI와
+      # 글자까지 같아야 한다.
+      PINVI_OAUTH_CALLBACK_BASE_URL: ${PINVI_OAUTH_CALLBACK_BASE_URL:-${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}}
       # PinVi 시스템 Telegram 봇 token(apps/api telegram_notify). 비우면 시스템 봇 알림은 skip.
       PINVI_TELEGRAM_BOT_TOKEN_DEFAULT: ${PINVI_TELEGRAM_BOT_TOKEN_DEFAULT:-}
       # 예약 알림 planner의 내부 경계(`/internal/telegram/plan`·`/plan/pending`, `X-Pinvi-Notification-Planner-Key`)를

@@ -32,12 +32,17 @@ _CLIENT_ID_ENV = "PINVI_GOOGLE_OAUTH_CLIENT_ID"
 _CLIENT_SECRET_ENV = "PINVI_GOOGLE_OAUTH_CLIENT_SECRET"
 _CALLBACK_ENV = "PINVI_OAUTH_CALLBACK_BASE_URL"
 _OAUTH_ENV = (_CLIENT_ID_ENV, _CLIENT_SECRET_ENV, _CALLBACK_ENV)
-#: PinVi `apps/api/app/core/config.py` `pinvi_oauth_callback_base_url` 기본값 — 넘기기만 하고 동작은 바꾸지 않는다.
-_PINVI_CALLBACK_DEFAULT = "http://localhost:12801"
+#: web 이미지에 구워지는 API origin(`NEXT_PUBLIC_PINVI_API_URL`)의 root 원천. callback은 세션 쿠키를 그 host에만 심으므로
+#: 기본값을 이 값에서 유도한다.
+_PUBLIC_API_ENV = "PINVI_PUBLIC_API_URL"
+_PUBLIC_API_FALLBACK = "http://127.0.0.1:12801"
+_PINVI_WEB = "pinvi-web"
 
 _CLIENT_ID = "123456789012-sentinelclientid.apps.googleusercontent.com"
-_CLIENT_SECRET = "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t"
+# 실제 Google secret 접두사(`GOCSPX-`)를 쓰지 않는다 — secret scanner 오탐 방지.
+_CLIENT_SECRET = "sentinel-google-client-secret-not-real"
 _CALLBACK = "https://pinvi-api.example-public.kr"
+_PUBLIC_API = "https://pinvi-api.example-derived.kr"
 
 _REQUIRED_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):\?")
 
@@ -62,7 +67,7 @@ def _render(environment_update: dict[str, str]) -> dict[str, Any]:
         key: value
         for key, value in os.environ.items()
         # 호스트 값이 새어 들어와 결과를 바꾸지 않게 한다.
-        if key not in {*_OAUTH_ENV, "KTDM_DOCKER_NETWORK_MODE"} and not key.startswith("COMPOSE_")
+        if key not in {*_OAUTH_ENV, _PUBLIC_API_ENV, "KTDM_DOCKER_NETWORK_MODE"} and not key.startswith("COMPOSE_")
     }
     environment.update({name: "contract-placeholder" for name in _REQUIRED_VAR.findall(fragment_text)})
     environment["COMPOSE_PROJECT_NAME"] = "ktdm-pinvi-google-oauth-env-contract"
@@ -91,19 +96,34 @@ def test_root_env_google_oauth_values_reach_the_api() -> None:
     assert rendered[_CALLBACK_ENV] == _CALLBACK
 
 
-def test_unset_google_oauth_values_keep_the_pinvi_defaults() -> None:
-    """미설정은 기동을 막지 않는다 — 빈 client id·secret은 PinVi가 provider 꺼짐으로 읽고, callback은 앱 기본값과 같다."""
+def test_unset_google_oauth_values_keep_the_provider_off() -> None:
+    """미설정은 기동을 막지 않는다 — 빈 client id·secret은 PinVi가 provider 꺼짐으로 읽는다."""
 
     rendered = _render({})
     assert rendered[_CLIENT_ID_ENV] == ""
     assert rendered[_CLIENT_SECRET_ENV] == ""
-    assert rendered[_CALLBACK_ENV] == _PINVI_CALLBACK_DEFAULT
+    assert rendered[_CALLBACK_ENV] == _PUBLIC_API_FALLBACK
 
     # `.env.example`을 그대로 복사한 빈 값도 같다.
     blank = _render({name: "" for name in _OAUTH_ENV})
     assert blank[_CLIENT_ID_ENV] == ""
     assert blank[_CLIENT_SECRET_ENV] == ""
-    assert blank[_CALLBACK_ENV] == _PINVI_CALLBACK_DEFAULT
+    assert blank[_CALLBACK_ENV] == _PUBLIC_API_FALLBACK
+
+
+def test_unset_callback_follows_the_public_api_origin_the_web_calls() -> None:
+    """callback 쿠키는 callback host에만 붙는다 — 비운 callback은 web이 부르는 API origin을 그대로 따라야 한다."""
+
+    assert _render({_PUBLIC_API_ENV: _PUBLIC_API})[_CALLBACK_ENV] == _PUBLIC_API
+    assert _render({_PUBLIC_API_ENV: _PUBLIC_API, _CALLBACK_ENV: ""})[_CALLBACK_ENV] == _PUBLIC_API
+    # 명시 재정의는 이긴다(운영자가 같은 origin을 직접 적는 경우).
+    assert _render({_PUBLIC_API_ENV: _PUBLIC_API, _CALLBACK_ENV: _CALLBACK})[_CALLBACK_ENV] == _CALLBACK
+
+    # web의 API origin(build arg·실행 env)이 같은 원천·같은 fallback을 쓴다 — 한쪽만 바뀌면 기본값에서 둘이 갈라진다.
+    web = _source_services()[_PINVI_WEB]
+    expected = f"${{{_PUBLIC_API_ENV}:-{_PUBLIC_API_FALLBACK}}}"
+    assert web["build"]["args"]["NEXT_PUBLIC_PINVI_API_URL"] == expected
+    assert web["environment"]["NEXT_PUBLIC_PINVI_API_URL"] == expected
 
 
 def test_google_oauth_env_is_only_on_the_api() -> None:
@@ -113,7 +133,9 @@ def test_google_oauth_env_is_only_on_the_api() -> None:
     api_environment = services[_PINVI_API]["environment"]
     for name in (_CLIENT_ID_ENV, _CLIENT_SECRET_ENV):
         assert api_environment[name] == f"${{{name}:-}}", name
-    assert api_environment[_CALLBACK_ENV] == f"${{{_CALLBACK_ENV}:-{_PINVI_CALLBACK_DEFAULT}}}"
+    assert api_environment[_CALLBACK_ENV] == (
+        f"${{{_CALLBACK_ENV}:-${{{_PUBLIC_API_ENV}:-{_PUBLIC_API_FALLBACK}}}}}"
+    )
     for service_name, service in services.items():
         if service_name == _PINVI_API:
             continue
@@ -123,6 +145,8 @@ def test_google_oauth_env_is_only_on_the_api() -> None:
 
 
 def test_rendered_client_secret_is_scrubbed_but_public_values_stay_readable() -> None:
+    """가림 **규칙**(`is_sensitive_key`)이 이름에 맞게 적용되는지 본다 — inspect·실패 출력 경로 자체는 기존 시험이 본다."""
+
     from kor_travel_docker_manager.services.secret_scrub import is_sensitive_key, redact_secret_text
 
     assert is_sensitive_key(_CLIENT_SECRET_ENV)
