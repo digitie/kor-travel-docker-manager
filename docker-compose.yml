@@ -2286,7 +2286,9 @@ services:
       # API origin(pinvi-web 이미지에 구워지는 `NEXT_PUBLIC_PINVI_API_URL` = `PINVI_PUBLIC_API_URL`)과 같아야 로그인이 남는다
       # — 그래서 기본값을 그 값에서 유도한다(정본 하나). 재정의할 때도 같은 origin이어야 하고, 끝 `/`는 붙이지 않는다(PinVi가
       # 지우지 않아 `//auth/...`가 되어 Google이 `redirect_uri_mismatch`로 막는다). Google Cloud 콘솔의 승인된 리디렉션 URI와
-      # 글자까지 같아야 한다.
+      # 글자까지 같아야 한다. 중첩 보간(`${A:-${B:-c}}`)은 설정 편집기의 "`${…}` 참조를 리터럴로 덮지 못한다" 보호
+      # (`docker_service._INTERPOLATED_VALUE_RE`·frontend `INTERPOLATED_VALUE_RE`)가 알아보지 못하는 형태다 — 비밀이 아닌
+      # 이름에만 쓴다.
       PINVI_OAUTH_CALLBACK_BASE_URL: ${PINVI_OAUTH_CALLBACK_BASE_URL:-${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}}
       # PinVi 시스템 Telegram 봇 token(apps/api telegram_notify). 비우면 시스템 봇 알림은 skip.
       PINVI_TELEGRAM_BOT_TOKEN_DEFAULT: ${PINVI_TELEGRAM_BOT_TOKEN_DEFAULT:-}
