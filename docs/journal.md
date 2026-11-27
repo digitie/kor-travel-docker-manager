@@ -1,3 +1,15 @@
+## 2026-11-27 — Map TourAPI 상세 호출 예산 env 배선(Map ADR-125)
+
+- 출처: Map ADR-125(kor-travel-map PR #1564·#1565) — TourAPI `detailCommon2`·`detailIntro2`·`detailImage2`·`detailPetTour2`·
+  무장애 `detailWithTour2`의 하루 상한·run 예산을 Map settings env로 덮을 수 있게 했다. 운영계정 트래픽 증설이 승인되면
+  루트 `.env`만 바꾸면 된다.
+- 변경: `kor-travel-map-dagster-code-server` environment에 `KOR_TRAVEL_MAP_VISITKOREA_DETAIL_{COMMON_DAILY,COMMON_ATTRACTION,
+  COMMON_FESTIVAL,INTRO_DAILY,IMAGE_DAILY,PET_DAILY,ACCESSIBILITY_DAILY}_BUDGET` 일곱(`${VAR:-}` — 비우면 Map 코드 기본값:
+  detailCommon2 하루 900·관광지 850·축제 50, 나머지 op 하루 각 900). run worker가 이 컨테이너의 자식이라 여기만 둔다.
+  `.env.example`에 빈 값으로 기재.
+- 순서: Map 쪽(빈 값 = 기본값 validator)이 들어간 이미지 전에 이 compose를 설치해도 Map 구판은 모르는 env를 무시한다(문제 없음).
+- 시험: compose·env 관련 backend 시험은 main과 같은 결과(컨테이너 root 실행 환경 탓 기존 실패 18건 동일, 새 실패 없음).
+
 ## 2026-11-27 — PinVi Google 회원가입·로그인 OAuth env 배선
 
 - 출처: 소유자 — PinVi Google 회원가입·로그인이 사라졌다. 읽기 전용 확인(env 이름·길이만, 값 미출력): root `.env`에
