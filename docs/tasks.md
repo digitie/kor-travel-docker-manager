@@ -3,15 +3,23 @@
 - [x] compose pinvi-api `PINVI_MAP_CONTAINING_AREAS_ENABLED` 기본 true, `.env.example`, 시험·문서.
 - [ ] **n150 적용(소유자)**: Manager 설치 → pinned 재구축으로 pinvi-api 재생성 → 국립공원 안 장소 detail-card에 containing-areas가 실리는지 확인.
 
+## 2026-11-28 — odroid 공용 Dagster 용량 되돌림 6→5·weather 4→3(ADR-69 되돌림)
+
+- [x] `hosts.odroid` 값·주석과 공정성 시험 기대값을 5·3으로 되돌림(f60f594 revert), ADR-69 "되돌림" 실측 기록.
+- [ ] **odroid 적용(소유자)**: 이 PR이 든 Manager 설치 → `sudo -n ktdctl dagster-instance-config show --json`이 `max_concurrent_runs: 5` →
+  `ktdctl dagster-plane converge --dry-run`(`would_recreate`, `images` 전부 `ready`) → `--confirm` → daemon의
+  `/opt/dagster/dagster_home/dagster.yaml`이 max 5·weather 3, daemon 로그 "Maximum is 5".
+- [ ] 되돌린 뒤 weather 사전 구성·정리 run의 `statement_timeout`이 멈추는지, weather·transport 대기가 적용 전 수준으로 돌아오는지.
+
 ## 2026-11-28 — odroid 공용 Dagster 용량 전역 5→6·weather 3→4(ADR-69)
 
 - [x] `hosts.odroid` 값·근거 주석, 공정성 시험 기대값, fairness 문서 §2 위험·관측과 §3 weather 우선순위 예외 기록.
 - [x] odroid `dagster-plane converge`가 n150 전용 pinned 폐포(#632)에 막히던 회귀 — Map·PinVi가 없는 호스트는 전체 문서 capture.
-- [ ] **odroid 적용(소유자)**: arm64 host 이미지 `kor-travel-dagster-host:fc52552976c61b10` 운반(§8.2, 2026-11-28 odroid에 없음) →
+- [x] **odroid 적용(소유자, 2026-11-28 10:38 KST Codex)**: arm64 host 이미지 `kor-travel-dagster-host:fc52552976c61b10` 운반(§8.2, 2026-11-28 odroid에 없음) →
   이 회귀 수정이 든 Manager 설치 → `sudo -n ktdctl dagster-instance-config show --json`이 `max_concurrent_runs: 6` →
   `ktdctl dagster-plane converge --dry-run`(`would_recreate`, `images` 전부 `ready`) → `--confirm` → daemon의
   `/opt/dagster/dagster_home/dagster.yaml`이 max 6·weather 4.
-- [ ] **배포 뒤 관측(1~2주)**: odroid load·swap·OOM kill(weather code-server 2.5 GB), weather provider 429, transport·geo queue 대기,
+- [x] **배포 뒤 관측** — 2.5시간 만에 나빠져 되돌림(위 절). 원래 항목: odroid load·swap·OOM kill(weather code-server 2.5 GB), weather provider 429, transport·geo queue 대기,
   공용 role 연결 수, weather `W-EXPORT-PREBUILT-ACCEPT-20261126` 적중률. 나빠지면 두 값을 되돌리는 PR.
 
 ## 2026-11-27 — PinVi Google 회원가입·로그인 OAuth env 배선

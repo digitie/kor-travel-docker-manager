@@ -199,7 +199,7 @@ db-init은 양의 정수가 아니거나 instance의 비-superuser 자리(`max_c
 |---|---|---|
 | (a) daemon primary QueuePool | dev0 6 → **dev2 12** | dev0 12 → **dev2 24**(상한) |
 | (b) webserver(`optimize_for_webserver` pool_size 1·overflow 20 ×3 engine) | 3 | 6(이론 상한 63 — 동시 요청 수에 묶임) |
-| (c) run worker(NullPool — 쓰는 동안만) | 0 | n150 전역 6 run × 2 ≈ 12, odroid 6 run ≈ 12(2026-11-28 5→6, ADR-69 — 전에는 ≈ 10) |
+| (c) run worker(NullPool — 쓰는 동안만) | 0 | n150 전역 6 run × 2 ≈ 12, odroid 5 run ≈ 10(2026-11-28 6으로 올렸다가 같은 날 되돌림, ADR-69) |
 | (d) daemon 임시 start_run instance(NullPool) | 0 | 3 |
 | (e) code-server의 sensor·schedule 평가가 `context.instance`를 쓸 때(NullPool) | 0 | 수 개 — 세지 않음 |
 | (f) multiprocess executor의 step 하위 프로세스 | 0 | run당 2를 넘을 수 있음 — 세지 않음 |
