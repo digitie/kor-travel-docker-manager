@@ -866,6 +866,8 @@ API 외 service에 전달하지 않는다. service token은 Map API와, 같은 �
 넘기고, C6c runtime 격리는 pinvi-api의 그 이름에서 정확히 그 값만 허용한다. 기능 플래그
 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED`는 기본 `true`(root `.env`로 끈다). 지도 날씨 레이어 플래그
 `PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED`(PinVi #600)는 기본 `false`다 — Map weather 상태 적재(7.3d)가 채워진 뒤 켠다(같은 service token; true인데 token이 비면 PinVi가 기동을 거부한다).
+장소 상세 카드의 국립공원·보호지역 플래그 `PINVI_MAP_CONTAINING_AREAS_ENABLED`(Map `GET /v1/features/{id}/containing-areas`)는
+PinVi 앱 기본값이 `false`지만 compose 기본 `true`다(Map 국립공원 경계 운영 적재 뒤 소유자 결정, 2026-11-28; root `.env`의 `false`가 kill switch).
 선택 재정의 `PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS`·`..._CONNECT_TIMEOUT_SECONDS`·`..._REQUEST_BUDGET_SECONDS`는
 compose 기본값 3·1·5초(PinVi 앱 기본값과 같음)로 늘 값이 들어간다. Map transport·weather 동시 호출 상한 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_MAX_CONCURRENCY`·`..._WEATHER_MAX_CONCURRENCY`는
 compose 기본값 16으로 늘 값이 들어간다 — PinVi 앱 기본값 2는 한 요청의 팬아웃(교통 12·날씨 8)보다 작다(Map 읽기 성능 계획
