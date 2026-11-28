@@ -147,6 +147,7 @@ function useContainerDetailModel({
   containerId: string;
   containerLabel: string;
   targetId?: string | null;
+  dagsterActions?: React.ReactNode;
   /** target의 depends_on까지 펼친 실제 재생성 대상. 영향 범위를 사용자에게 보여 준다. */
   targetServices?: string[] | null;
   onClose: () => void;
@@ -262,6 +263,8 @@ return (
             <X className="w-5 h-5" />
           </Button>
         </div>
+
+        {props.dagsterActions}
 
         {/* 탭: 좁은 화면에서는 가로 스크롤되어 본문과 겹치지 않는다. */}
         <Tabs className="flex-grow min-h-0 overflow-hidden" value={tab} onValueChange={(value) => setTab(value as TabId)}>

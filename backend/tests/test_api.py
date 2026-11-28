@@ -536,6 +536,24 @@ def test_control_container_invalid_action(mock_docker_service):
 
 
 @patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_dagster_container_action_requires_a_registered_dagster_role(mock_docker_service):
+    login_client()
+    response = client.post(
+        "/api/v1/containers/rustfs/action", json={"action": "force-stop"}
+    )
+    assert response.status_code == 400
+    mock_docker_service.control_container.assert_not_called()
+
+    mock_docker_service.control_container.return_value = {"success": True, "message": "restarted"}
+    dagster_id = "kor-travel-weather-dagster-code-server"
+    response = client.post(
+        f"/api/v1/containers/{dagster_id}/action", json={"action": "dagster-restart"}
+    )
+    assert response.status_code == 200
+    mock_docker_service.control_container.assert_called_once_with(dagster_id, "dagster-restart")
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_get_container_logs_success(mock_docker_service):
     login_client()
     mock_docker_service.get_container_logs.return_value = {
