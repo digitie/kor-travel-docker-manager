@@ -264,9 +264,7 @@ return (
           </Button>
         </div>
 
-        {props.dagsterActions ? (
-          <div className="flex flex-wrap gap-2 px-6 py-2">{props.dagsterActions}</div>
-        ) : null}
+        {props.dagsterActions}
 
         {/* 탭: 좁은 화면에서는 가로 스크롤되어 본문과 겹치지 않는다. */}
         <Tabs className="flex-grow min-h-0 overflow-hidden" value={tab} onValueChange={(value) => setTab(value as TabId)}>

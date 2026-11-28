@@ -1021,6 +1021,29 @@ function useDashboardModel(initialService?: string) {
 
 type DashboardModel = ReturnType<typeof useDashboardModel>;
 
+function ContainerDagsterControls({ container, model }: {
+  container: ContainerStatus;
+  model: DashboardModel;
+}) {
+  if (!isDagsterControlTarget(container.id)) return null;
+  return (
+    <div className="px-6 py-2">
+      <DagsterServiceControls
+        serviceId={container.id}
+        label={container.display_name || container.name}
+        actions={dagsterServiceActions(container)}
+        affectedServices={model.impactedTargetsFor(container.id).map(target => target.id)}
+        pending={model.actionMutation.isPending}
+        onLogs={() => {
+          model.closeDetailModal();
+          model.openLogModal(container.id);
+        }}
+        onAction={action => model.actionMutation.mutate({ id: container.id, action })}
+      />
+    </div>
+  );
+}
+
 export default function DashboardClient({ initialService }: { initialService?: string } = {}) {
   const model = useDashboardModel(initialService);
   const {
@@ -1160,20 +1183,7 @@ if (isAuthLoading) {
           containerLabel={detailContainer.display_name || detailContainer.name}
           targetId={detailTarget?.id ?? null}
           targetServices={detailTarget?.resolved_services ?? null}
-          dagsterActions={isDagsterControlTarget(detailContainer.id) ? (
-            <DagsterServiceControls
-              serviceId={detailContainer.id}
-              label={detailContainer.display_name || detailContainer.name}
-              actions={dagsterServiceActions(detailContainer)}
-              affectedServices={model.impactedTargetsFor(detailContainer.id).map(target => target.id)}
-              pending={model.actionMutation.isPending}
-              onLogs={() => {
-                closeDetailModal();
-                model.openLogModal(detailContainer.id);
-              }}
-              onAction={action => model.actionMutation.mutate({ id: detailContainer.id, action })}
-            />
-          ) : null}
+          dagsterActions={<ContainerDagsterControls container={detailContainer} model={model} />}
           onClose={closeDetailModal}
         />
       )}
