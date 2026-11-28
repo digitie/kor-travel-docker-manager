@@ -1,5 +1,6 @@
 'use client';
 
+import { DagsterServiceControls, type DagsterServiceAction } from '@kor-travel/ui/dagster-workbench';
 import { Button } from '@kor-travel/ui/button';
 import { Input } from '@kor-travel/ui/input';
 import { NativeSelect, NativeSelectOption } from '@kor-travel/ui/native-select';
@@ -36,6 +37,7 @@ import RuntimePinPanel from './RuntimePinPanel';
 import PlaneAlertsPanel from './PlaneAlertsPanel';
 import SourceStatusPanel from './SourceStatusPanel';
 import ContainerDetailModal from './ContainerDetailModal';
+import { isDagsterControlTarget } from '@/lib/dagsterOperations';
 import LoginScreen from './LoginScreen';
 import ToastStack from './Toast';
 import { type ToastItem, errorToast, successToast } from '@/lib/toasts';
@@ -97,7 +99,12 @@ const FLEET_COLUMNS: ColumnDef<FleetRow>[] = [
                 { id: 'column8', header: '제어', cell: ({ row }) => row.original.cells[8] }
               ];
 
-function useDashboardModel() {
+function dagsterServiceActions(container: ContainerStatus): DagsterServiceAction[] {
+  if (container.remote || container.observed_only) return [];
+  return container.status === 'running' ? ['dagster-restart', 'force-stop'] : ['dagster-restart'];
+}
+
+function useDashboardModel(initialService?: string) {
   const queryClient = useQueryClient();
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
@@ -159,9 +166,12 @@ function useDashboardModel() {
   // 서버가 1013(혼잡)으로 흘려보낸 상태. 폴백 폴링 주기를 늦추는 데만 쓴다.
   const [isWsShedding, setIsWsShedding] = useState<boolean>(false);
   // inspect 상세 패널 대상 컨테이너(null이면 닫힘).
-  const [detailContainer, setDetailContainer] = useState<ContainerStatus | null>(null);
-  // 안정된 identity로 넘긴다. 인라인 화살표를 주면 WS broadcast(2초)마다 prop이 바뀐다.
-  const closeDetailModal = useCallback(() => setDetailContainer(null), []);
+  const [detailChoice, setDetailChoice] = useState<ContainerStatus | null>(null);
+  const [linkedService, setLinkedService] = useState(initialService);
+  const closeDetailModal = useCallback(() => {
+    setDetailChoice(null);
+    setLinkedService(undefined);
+  }, []);
 
   // Modal States
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
@@ -273,6 +283,9 @@ function useDashboardModel() {
   // 것부터 나열된다는 우연에 기대게 된다.
   // (`all` target은 현재 21개 서비스를 담는다 — 순서가 바뀌면 전체 스택 범위가 달라진다.)
   // 순서와 무관하게 **가장 좁은** target을 고른다.
+  const detailContainer = detailChoice ?? (linkedService
+    ? (wsContainers || fallbackContainers).find((container) => container.id === linkedService)
+    : undefined) ?? null;
   const detailTarget = useMemo(() => {
     if (!detailContainer) return null;
     const matches = (targetsByContainer.get(detailContainer.id) ?? []);
@@ -580,7 +593,8 @@ function useDashboardModel() {
       const container = displayContainers.find((item) => item.id === variables.id);
       const label = container?.display_name || container?.name || variables.id;
       const verb =
-        variables.action === 'start' ? '시작' : variables.action === 'stop' ? '중지' : '재시작';
+        variables.action === 'start' ? '시작' : variables.action === 'stop' ? '중지' :
+        variables.action === 'force-stop' ? '강제 종료' : '재시작';
       pushToast(errorToast(humanizeError(err, `${label} ${verb}`)));
     },
   });
@@ -596,8 +610,8 @@ function useDashboardModel() {
   );
 
   const handleAction = async (id: string, action: string) => {
-    if (action === 'stop' || action === 'restart') {
-      const container = displayContainers.find((item) => item.id === id);
+    if (['stop', 'restart'].includes(action)) {
+      const container = allContainers.find((item) => item.id === id);
       const label = container?.display_name || container?.name || id;
       const impacted = impactedTargetsFor(id);
       const verb = action === 'stop' ? '중지' : '재시작';
@@ -945,7 +959,7 @@ function useDashboardModel() {
     confirmation,
     isWsConnected,
     detailContainer,
-    setDetailContainer,
+    setDetailContainer: setDetailChoice,
     closeDetailModal,
     isConfigModalOpen,
     setIsConfigModalOpen,
@@ -988,6 +1002,7 @@ function useDashboardModel() {
     kpiCounts,
     actionMutation,
     handleAction,
+    impactedTargetsFor,
     configMutation,
     resetMutation,
     isLoadingChart,
@@ -1006,8 +1021,8 @@ function useDashboardModel() {
 
 type DashboardModel = ReturnType<typeof useDashboardModel>;
 
-export default function DashboardClient() {
-  const model = useDashboardModel();
+export default function DashboardClient({ initialService }: { initialService?: string } = {}) {
+  const model = useDashboardModel(initialService);
   const {
     queryClient,
     isAdminSettingsOpen,
@@ -1145,6 +1160,20 @@ if (isAuthLoading) {
           containerLabel={detailContainer.display_name || detailContainer.name}
           targetId={detailTarget?.id ?? null}
           targetServices={detailTarget?.resolved_services ?? null}
+          dagsterActions={isDagsterControlTarget(detailContainer.id) ? (
+            <DagsterServiceControls
+              serviceId={detailContainer.id}
+              label={detailContainer.display_name || detailContainer.name}
+              actions={dagsterServiceActions(detailContainer)}
+              affectedServices={model.impactedTargetsFor(detailContainer.id).map(target => target.id)}
+              pending={model.actionMutation.isPending}
+              onLogs={() => {
+                closeDetailModal();
+                model.openLogModal(detailContainer.id);
+              }}
+              onAction={action => model.actionMutation.mutate({ id: detailContainer.id, action })}
+            />
+          ) : null}
           onClose={closeDetailModal}
         />
       )}

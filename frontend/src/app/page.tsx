@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { isDagsterControlTarget } from '@/lib/dagsterOperations';
 import DashboardClient from '../components/DashboardClient';
 
 export const metadata: Metadata = {
@@ -7,6 +8,11 @@ export const metadata: Metadata = {
   description: 'Docker 인프라 컨테이너 관리와 메트릭 운영 콘솔',
 };
 
-export default function Page() {
-  return <DashboardClient />;
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ service?: string | string[] }>;
+}) {
+  const { service } = await searchParams;
+  return <DashboardClient initialService={isDagsterControlTarget(service) ? service : undefined} />;
 }

@@ -1,3 +1,7 @@
+## 2026-11-28 — Dagster 서비스 상세 제어
+
+등록된 Dagster 코드 서버와 공용 데몬 상세 화면에 Common UI를 사용해 로그, 강제 종료, 재시작을 제공한다. 새 조작은 로컬 등록 서비스에만 허용하며 Manager의 운영 변경 잠금을 사용한다.
+
 ## 2026-11-28 — PinVi containing-areas 플래그 기본 켜짐
 
 - 출처: Map 국립공원 경계가 운영에 적재돼 소유자가 PinVi 장소 상세 카드의 containing-areas(Map `GET /v1/features/{id}/containing-areas`)를

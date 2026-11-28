@@ -2979,3 +2979,38 @@ def test_cadvisor_runs_light_and_keeps_the_basic_metrics() -> None:
     options = [argument.split("=", 1)[0] for argument in command]
     assert len(options) == len(set(options)), "같은 flag가 두 번이면 마지막 값이 이긴다"
     assert not {"cpu", "memory", "network"} & set(disabled)
+
+
+
+@pytest.mark.parametrize(
+    ("action", "method", "kwargs"),
+    [("force-stop", "stop", {"timeout": 0}), ("dagster-restart", "restart", {"timeout": 60})],
+)
+def test_dagster_control_uses_local_admission_and_host_lock(monkeypatch, action, method, kwargs):
+    service = docker_service_module.DockerService()
+    client = Mock()
+    container = client.containers.get.return_value
+    container.attrs = {"Config": {"StopTimeout": 60}}
+    admitted = Mock()
+    lock = Mock(return_value=nullcontext())
+    monkeypatch.setattr(service, "_get_client", lambda: client)
+    monkeypatch.setattr(docker_service_module, "require_local_container", admitted)
+    monkeypatch.setattr(docker_service_module, "manager_mutation_lock", lock)
+    name = "kor-travel-geo-dagster-code-server"
+
+    result = service.control_container(name, action)
+
+    assert result["success"]
+    admitted.assert_called_once_with(name)
+    lock.assert_called_once_with()
+    getattr(container, method).assert_called_once_with(**kwargs)
+
+
+@pytest.mark.parametrize("action", ["force-stop", "dagster-restart"])
+def test_dagster_control_refuses_other_managed_services(monkeypatch, action):
+    service = docker_service_module.DockerService()
+    client = Mock()
+    monkeypatch.setattr(service, "_get_client", client)
+
+    assert service.control_container("rustfs", action)["success"] is False
+    client.assert_not_called()

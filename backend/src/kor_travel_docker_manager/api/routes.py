@@ -23,6 +23,7 @@ from kor_travel_docker_manager.services.disk_usage import read_disk_usage
 from kor_travel_docker_manager.services.docker_service import (
     ContainerConfigValidationError,
     docker_service,
+    is_dagster_control_target,
 )
 from kor_travel_docker_manager.services.job_runner import (
     JobConflictError,
@@ -778,8 +779,10 @@ def list_containers():
 def control_container(container_id: str, payload: ActionRequest):
     """Start, stop, or restart a specific infrastructure service."""
     action = payload.action.lower()
-    if action not in ["start", "stop", "restart"]:
-        raise HTTPException(status_code=400, detail="Action must be start, stop, or restart")
+    if action in {"force-stop", "dagster-restart"} and not is_dagster_control_target(container_id):
+        raise HTTPException(status_code=400, detail="Action is limited to supported Dagster services")
+    if action not in {"start", "stop", "restart", "force-stop", "dagster-restart"}:
+        raise HTTPException(status_code=400, detail="Unsupported container action")
 
     # GM-12: DeploymentContractError(및 그 하위클래스인 candidate/post-mutation 계약
     # 위반)는 여기서 잡지 않는다 — main.py의 app 레벨 핸들러 3종이 처리한다.

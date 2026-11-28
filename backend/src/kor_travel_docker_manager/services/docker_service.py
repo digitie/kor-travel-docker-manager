@@ -21,6 +21,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     assert_manager_mutation_allowed,
     compose_volume_graph_hash,
     contract_locked_env_names,
+    manager_mutation_lock,
     revalidate_candidate_system_bind_snapshots,
 )
 from kor_travel_docker_manager.services.capabilities import (
@@ -60,6 +61,11 @@ from kor_travel_docker_manager.services.secret_scrub import (
 from kor_travel_docker_manager.services.status_snapshot import StatusSnapshot, invalidates_status
 
 logger = logging.getLogger(__name__)
+
+
+def is_dagster_control_target(container_id: str) -> bool:
+    role = str(MANAGED_CONTAINERS.get(container_id, {}).get("role") or "")
+    return role == "dagster-shared-daemon" or role.endswith("-dagster-code-server")
 
 
 def _get_compose_path() -> str:
@@ -975,9 +981,18 @@ class DockerService:
 
     @invalidates_status
     def control_container(self, container_id: str, action: str) -> dict[str, Any]:
-        """Perform start/stop/restart action on a container."""
+        """Perform a managed container lifecycle action."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
+        if action in {"force-stop", "dagster-restart"}:
+            if not is_dagster_control_target(container_id):
+                return {"success": False, "error": "Action is limited to supported Dagster services"}
+            require_local_container(container_id)
+            with manager_mutation_lock():
+                return self._control_container_unlocked(
+                    container_id, "restart" if action == "dagster-restart" else action,
+                    environment_snapshot=None,
+                )
         if action not in {"start", "stop", "restart"}:
             return {"success": False, "error": f"Invalid action: {action}"}
         if action != "stop":
@@ -1025,6 +1040,8 @@ class DockerService:
 
             if action == "start":
                 container.start()
+            elif action == "force-stop":
+                container.stop(timeout=0)
             elif action in {"stop", "restart"}:
                 # 컨테이너 자신의 grace(compose `stop_grace_period` → `Config.StopTimeout`)를
                 # 그대로 넘긴다. docker-py의 `restart()`는 인자가 없으면 **항상** `t=10`을
