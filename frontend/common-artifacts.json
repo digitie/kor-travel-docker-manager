@@ -1,23 +1,24 @@
 {
   "status": "CANDIDATE_NOT_RELEASED",
-  "candidate": "touch-focus-ui-0.2.6-main-05d7f91a4151",
+  "candidate": "collection-pipeline-ui-0.2.8-main-e131a1efb195",
   "sources": {
-    "common": "05d7f91a4151a69d72b8bf1dc0007291c6ab2a61",
+    "common": "e131a1efb195f618561fd6ca00833007ddc2721b",
     "maplibre-vworld-react": "79b70997de8dd4a6bcc9630233f14f273cb27991",
     "lightningcss": "748651cbd845971e65c411166ddee101745dab21",
     "serde-content": "18e53fcf6f8ace093a292891b34fa3411192617d",
-    "radix-ui-primitives": "1752a539c8d5ae57961a0fa2702d2573d48fefe7"
+    "radix-ui-primitives": "1752a539c8d5ae57961a0fa2702d2573d48fefe7",
+    "kor-travel-toast": "e131a1efb195f618561fd6ca00833007ddc2721b"
   },
   "packages": {
     "@kor-travel/tokens": {
-      "version": "0.1.7",
-      "filename": "kor-travel-tokens-0.1.7.tgz",
-      "integrity": "sha512-B3wQbS8Jn61znGfMjNM4xzVl8fx/8ud0ZIaOwJGHJNBBV+lBpt0QfrOTD+k+KSlFDjp+moyvTCLnuIzvE3Pqqg=="
+      "version": "0.1.9",
+      "filename": "kor-travel-tokens-0.1.9.tgz",
+      "integrity": "sha512-28L0wExc0mSULtq/8gnljgXsTbp2EMDG/vJgWecdOfAvttMEY6iI1qlL/7zBPKNXU/QjlodXfuQttr+UxCg2Kw=="
     },
     "@kor-travel/ui": {
-      "version": "0.2.6",
-      "filename": "kor-travel-ui-0.2.6.tgz",
-      "integrity": "sha512-29bcozPJl8nS+IP5uL1rjs1KjMQQpBo9X80bYtcGnIh5pfQtNrWqgqum/K33vx04w2eP4Zi4uQszCS8FeLHSKg=="
+      "version": "0.2.8",
+      "filename": "kor-travel-ui-0.2.8.tgz",
+      "integrity": "sha512-tq2YSGs5DVdu1dLLJNmwbPO79EOJ8UkwtDHDqLqOcF6JPhgYhQzqsGDzaxYyZX5qS9RaGGoT7zn62dU9XtISeg=="
     },
     "lightningcss": {
       "version": "1.33.0+nativecss.fix.4",
@@ -43,6 +44,11 @@
       "version": "1.3.1+kortravel.fix.2",
       "filename": "radix-ui-react-focus-scope-1.3.1+kortravel.fix.2.tgz",
       "integrity": "sha512-v3XweXrUSZ/QfrMVvYmsAkVNDnvcN21QKbSrViXYf0OQf5Ue9xSgqQIukgGjsYMEBQ5qxQW8fnOC9t1Y0ENPXw=="
+    },
+    "@kor-travel/toast": {
+      "version": "0.1.8",
+      "filename": "kor-travel-toast-0.1.8.tgz",
+      "integrity": "sha512-Pa/GY9vLzRrPD+oITZ/mDi9955a0sc1khcJP1Mul2TNnCTeLA+lh+FOqcoDqG2+s2ffQ9d/Q30YeBVJYltoI6w=="
     }
   }
 }
