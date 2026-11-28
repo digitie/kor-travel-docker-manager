@@ -2173,7 +2173,7 @@ role의 연결 수를 보는 수단도 없었다.
 
 ## ADR-69: odroid 공용 Dagster 용량 — 전역 5→6, weather location 3→4 (weather export 사전 구성 대기)
 
-- 상태: accepted — 소스 반영, 운영 적용 전(소유자 배포)
+- 상태: reverted — 2026-11-28 10:38 KST 운영 적용, 같은 날 실측 뒤 두 값을 5·3으로 되돌림(아래 "되돌림")
 - 날짜: 2026-11-28
 - 결정자: 소유자(값과 위험 수용), 구현은 Claude
 
@@ -2214,3 +2214,20 @@ sweep, 일별 보존)에 잡히거나 전역 5가 차면 슬롯이 빌 때까지
   --dry-run`/`--confirm`([prod-deployment.md](prod-deployment.md) §8.2).
 - (open) 배포 뒤 1~2주 관측: load·swap·OOM kill, provider 429, transport·geo queue 대기, role 연결 수, weather 적중률
   (`W-EXPORT-PREBUILT-ACCEPT-20261126`). 나빠지면 두 값을 되돌리는 PR.
+
+### 되돌림(2026-11-28)
+
+적용(10:38 KST) 뒤 약 2.5시간 odroid를 읽기 전용으로 쟀다(geo `pg_dump` 백업 10:31~11:37 포함, 백업이 끝난 뒤에도 나빠졌다).
+적용 전 4시간과 비교한다.
+
+| 항목 | 적용 전 4시간 | 적용 뒤(10:38~13:08) |
+| --- | --- | --- |
+| weather run 생성→시작 p50 / p75 | 133초 / 239초 | 225초 / 592초 |
+| transport run 생성→시작 p50 / p75 | 95초 / 175초 | 131초 / 245초 |
+| weather 실패 run | 4 | 7 |
+| `weather_export_prebuild_job` | 성공 | 5번 모두 실패(`statement_timeout`) |
+| `weather_export_maintenance_job` | — | 2번 실패(`retire:statement_timeout`) |
+| 13:08 load average / swap 사용 | — | 23.7·28.1·27.6 / 2.0 GB, geo code-server unhealthy |
+
+슬롯을 늘려도 처리량이 늘지 않고 공용 PostgreSQL·CPU 경합만 커져, 목표였던 사전 구성 run이 오히려 모두 실패했다. 소유자 지시로
+`hosts.odroid`를 전역 5·weather 3으로 되돌린다. 사전 구성 대기는 슬롯이 아니라 weather 쪽(비용·실행 시각)에서 다시 다룬다.

@@ -39,7 +39,8 @@ count ≥ limit). location 상한이 작을수록 이 문턱이 낮다(Map 10이
 - n150: 2026-11-24 전에는 map·pinvi 10이었다. Map 전체 적재 하나가 6을 다 차지하면 PinVi·Concierge run이 큐에 남았다.
   Map 4면 Map이 몰려도 2자리가 다른 테넌트에 남는다. PinVi 2는 Concierge와 같은 크기다.
 - odroid: 2026-11-24에는 세 값 모두 이미 전역 5보다 작아 바꾸지 않았다(2026-10-26 운영 대조로 보존한 튜닝). 값별 근거는 `hosts.odroid` 주석.
-- odroid 2026-11-28 소유자 승인(ADR-69): **전역 5→6, weather 3→4**. transport 3·geo 1은 그대로다. weather 4 < 전역 6이라 규칙을
+- odroid 2026-11-28 소유자 승인(ADR-69): **전역 5→6, weather 3→4** — **같은 날 운영 실측 뒤 5·3으로 되돌렸다**(weather 대기 p75 239→592초,
+  사전 구성 run 5번 모두 `statement_timeout`, ADR-69 "되돌림"). 아래는 올렸을 때의 근거와 위험 기록이다. transport 3·geo 1은 그대로다. weather 4 < 전역 6이라 규칙을
   지키고, weather가 몰려도 2자리가 transport·geo에 남는다(전에는 3 중 2). location 안 업무 상한(`external_weather` 2·
   `external_weather_slow` 1)도 4보다 작아 둘이 함께 돌아도 1자리가 지역·특보·export 사전 구성 run에 남는다.
   - 왜: weather A3 export 사전 구성(`weather_export_prebuild_job`, cron `23,38`)이 queue에서 기다렸다 — 우선순위 10(아래 §3 예외)을
