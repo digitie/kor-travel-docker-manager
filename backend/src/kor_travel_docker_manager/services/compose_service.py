@@ -417,6 +417,13 @@ def _pinned_runtime_compose_scope(
     return _compose_service_scope(document, tuple(roots), environment)
 
 
+def _pinned_runtime_hosted_here() -> bool:
+    """Map·PinVi pinned runtime이 이 호스트에 있는가(registry `host:`) — 재구축 폐포가 뜻을 갖는 호스트(n150)."""
+    config = load_targets_config()
+    selected = current_host(config)
+    return any(selected in target_hosts(target, config) for target in ("map", "pinvi"))
+
+
 def _project_compose_service_scope(
     document: Mapping[str, Any], scope: tuple[str, ...], environment: Mapping[str, str],
     *, authority: tuple[str, Mapping[str, frozenset[str]]] | None = None,
@@ -6006,9 +6013,13 @@ class ComposeService:
             # instance가 들고, plane이 닿지 않는 서비스(Concierge UI 등)의 계약은 이 명령의 판정에 들지 않는다.
             # 전체 문서로 잡으면 root `.env`의 `KOR_TRAVEL_CONCIERGE_UI_START_MODE=prebuilt`(activate-concierge 전용
             # 시작 명령)만으로 raw UI command 검사에 걸려 plane converge가 늘 거부됐다(2026-11-23 n150 실측).
+            # 이 폐포는 Map·PinVi pinned runtime이 사는 호스트(n150)에서만 뜻이 있다 — 그 뿌리(slot·one-shot·Concierge)가
+            # 다른 호스트에는 소유자가 없어, odroid에서는 dry-run까지 늘 "scoped compose dependency has no local owner"로
+            # 거부됐다(2026-11-28 실측, #632 회귀). Map·PinVi가 없는 호스트는 #632 전처럼 전체 문서로 잡는다 — 가장 엄한
+            # 검증이고, plane `up`은 그대로 R3·호스트 소유 검사(`_assert_host_mutation_scope`)를 지난다.
             transaction, _ = self.capture_transaction_unlocked(
                 environment_snapshot=environment_snapshot,
-                pinned_runtime_scope=True,
+                pinned_runtime_scope=_pinned_runtime_hosted_here(),
             )
             plane, services, locations = self._frozen_shared_plane(transaction)
             self._require_plane_location_owners_fenced(locations, installed_location_owners())
