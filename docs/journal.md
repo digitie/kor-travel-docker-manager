@@ -1,3 +1,11 @@
+## 2026-11-28 — PinVi containing-areas 플래그 기본 켜짐
+
+- 출처: Map 국립공원 경계가 운영에 적재돼 소유자가 PinVi 장소 상세 카드의 containing-areas(Map `GET /v1/features/{id}/containing-areas`)를
+  켜기로 했다. PinVi `pinvi_map_containing_areas_enabled`(앱 기본 false)는 `apps/api`만 읽는다(PinVi main grep — web·ETL 없음).
+- 변경: pinvi-api environment에 `PINVI_MAP_CONTAINING_AREAS_ENABLED: ${PINVI_MAP_CONTAINING_AREAS_ENABLED:-true}`(root `.env`의 false가
+  kill switch), `.env.example`에 `=true`, `test_pinvi_api_reuses_the_map_service_token_for_transport`에 값·pinvi-api 외 비수신·예시 줄 고정.
+- 적용: Manager 설치 → pinned 재구축으로 pinvi-api 재생성(실행 중 env를 보존하는 apply-core-candidate로는 새 이름이 안 들어간다, 7.5c와 같다).
+
 ## 2026-11-28 — odroid `dagster-plane converge`가 n150 전용 pinned 폐포에 막힌다(#632 회귀)
 
 - 증상: #657(`4f7ede8`) 설치 뒤 odroid에서 `sudo -n …/ktdctl dagster-plane converge --dry-run`이 `capture_transaction_unlocked`에서

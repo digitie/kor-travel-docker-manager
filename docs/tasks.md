@@ -1,3 +1,8 @@
+## 2026-11-28 — PinVi containing-areas 플래그 기본 켜짐
+
+- [x] compose pinvi-api `PINVI_MAP_CONTAINING_AREAS_ENABLED` 기본 true, `.env.example`, 시험·문서.
+- [ ] **n150 적용(소유자)**: Manager 설치 → pinned 재구축으로 pinvi-api 재생성 → 국립공원 안 장소 detail-card에 containing-areas가 실리는지 확인.
+
 ## 2026-11-28 — odroid 공용 Dagster 용량 전역 5→6·weather 3→4(ADR-69)
 
 - [x] `hosts.odroid` 값·근거 주석, 공정성 시험 기대값, fairness 문서 §2 위험·관측과 §3 weather 우선순위 예외 기록.

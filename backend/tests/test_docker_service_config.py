@@ -1135,6 +1135,14 @@ def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
         for service_name, service in services.items()
         if "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED" in (service.get("environment") or {})
     } == {_PINVI_API_SERVICE}
+    # 장소 상세 카드 containing-areas(Map 국립공원·보호지역). PinVi 앱 기본값은 false지만 운영은 켠다(소유자 2026-11-28) —
+    # 빈 값도 켜짐으로 읽히고(`:-`), root `.env`의 false가 kill switch다. pinvi-api만 받는다.
+    assert pinvi_environment["PINVI_MAP_CONTAINING_AREAS_ENABLED"] == "${PINVI_MAP_CONTAINING_AREAS_ENABLED:-true}"
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "PINVI_MAP_CONTAINING_AREAS_ENABLED" in (service.get("environment") or {})
+    } == {_PINVI_API_SERVICE}
     # 선택 재정의 timeout 셋 — 기본값은 PinVi 앱 기본값(3·1·5초)과 같고 빈 값이 되지 않는다(`:-`).
     for name, default in (
         ("PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS", "3"),
@@ -1155,6 +1163,9 @@ def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
     } == {_MAP_API_SERVICE, _PINVI_API_SERVICE}
     env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     assert "PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED=true" in env_example_lines
+    assert [line for line in env_example_lines if line.startswith("PINVI_MAP_CONTAINING_AREAS_ENABLED=")] == [
+        "PINVI_MAP_CONTAINING_AREAS_ENABLED=true"
+    ]
     assert [line for line in env_example_lines if line.startswith("PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=")] == [
         "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=false"
     ]
