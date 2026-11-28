@@ -224,11 +224,10 @@ def test_every_location_cap_is_below_its_host_global_budget() -> None:
         "kortravelmap.dagster.definitions": 4,
         "pinvi.etl.definitions": 2,
     })
-    # odroid는 2026-10-26 운영 대조로 보존한 값에서 2026-11-28 소유자 승인(ADR-69)으로 전역 5→6·weather 3→4만 바꿨다
-    # (근거는 docker-targets.yml `hosts.odroid` 주석). transport 3·geo 1은 그대로다.
-    assert rendered["odroid"] == (6, {
+    # odroid는 2026-10-26 운영 대조로 보존한 값 그대로다(근거는 docker-targets.yml `hosts.odroid` 주석).
+    assert rendered["odroid"] == (5, {
         "kortravelgeo_dagster.definitions": 1,
-        "kortravelweather_dagster.definitions": 4,
+        "kortravelweather_dagster.definitions": 3,
         "kor-travel-transport": 3,
     })
 
