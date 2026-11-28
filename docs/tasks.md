@@ -1,8 +1,10 @@
 ## 2026-11-28 — odroid 공용 Dagster 용량 전역 5→6·weather 3→4(ADR-69)
 
 - [x] `hosts.odroid` 값·근거 주석, 공정성 시험 기대값, fairness 문서 §2 위험·관측과 §3 weather 우선순위 예외 기록.
-- [ ] **odroid 적용(소유자)**: Manager 설치 → `sudo -n ktdctl dagster-instance-config show --json`이 `max_concurrent_runs: 6` →
-  `ktdctl dagster-plane converge --dry-run`(host 이미지 `ready` 확인, 없으면 §8.2 운반) → `--confirm` → daemon의
+- [x] odroid `dagster-plane converge`가 n150 전용 pinned 폐포(#632)에 막히던 회귀 — Map·PinVi가 없는 호스트는 전체 문서 capture.
+- [ ] **odroid 적용(소유자)**: arm64 host 이미지 `kor-travel-dagster-host:fc52552976c61b10` 운반(§8.2, 2026-11-28 odroid에 없음) →
+  이 회귀 수정이 든 Manager 설치 → `sudo -n ktdctl dagster-instance-config show --json`이 `max_concurrent_runs: 6` →
+  `ktdctl dagster-plane converge --dry-run`(`would_recreate`, `images` 전부 `ready`) → `--confirm` → daemon의
   `/opt/dagster/dagster_home/dagster.yaml`이 max 6·weather 4.
 - [ ] **배포 뒤 관측(1~2주)**: odroid load·swap·OOM kill(weather code-server 2.5 GB), weather provider 429, transport·geo queue 대기,
   공용 role 연결 수, weather `W-EXPORT-PREBUILT-ACCEPT-20261126` 적중률. 나빠지면 두 값을 되돌리는 PR.

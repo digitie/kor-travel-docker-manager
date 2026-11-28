@@ -295,6 +295,23 @@ def test_canonical_pair_roots_include_support_bootstrap_and_shared_plane(monkeyp
     assert "kor-travel-map-valkey" in scope
     assert all("weather" not in name for name in scope)
 
+
+@pytest.mark.parametrize("host,hosted", [("n150", True), ("odroid", False)])
+def test_pinned_runtime_is_hosted_only_where_map_and_pinvi_live(monkeypatch, host, hosted):
+    """`dagster-plane converge`는 재구축 폐포를 Map·PinVi가 사는 호스트에서만 쓴다. odroid에서는 그 폐포가
+    늘 "no local owner"다(2026-11-28 실측) — 재구축 자체는 odroid에서 종전대로 거부한다(fail-closed)."""
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", str(root))
+    monkeypatch.setattr(module, "current_host", lambda config: host)
+    candidate = yaml.safe_load((root / "docker-compose.yml").read_text())
+    assert module._pinned_runtime_hosted_here() is hosted
+    if hosted:
+        module._pinned_runtime_compose_scope(candidate, {})
+    else:
+        with pytest.raises(ComposeCandidateContractError, match="local owner"):
+            module._pinned_runtime_compose_scope(candidate, {})
+
 @pytest.mark.skipif(not _docker_compose(), reason="Docker Compose 없음")
 def test_public_capture_projects_before_external_read_and_frozen_rechecks_scope(
     authority, tmp_path, monkeypatch,

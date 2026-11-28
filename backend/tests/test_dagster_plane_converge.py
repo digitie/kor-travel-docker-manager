@@ -11,6 +11,8 @@ import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -194,15 +196,60 @@ def test_a_stale_plane_recreates_only_the_plane_services_under_the_lock(
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
-def test_converge_captures_the_rebuilds_pinned_scope(harness: SimpleNamespace, dry_run: bool) -> None:
-    """plane converge는 재구축과 같은 서비스 폐포로 render를 잡는다 — plane이 닿지 않는 서비스(Concierge UI의
-    prebuilt 시작 명령 등)의 계약이 이 명령을 막지 않는다(2026-11-23 n150: 전체 문서 검사가 늘 거부했다)."""
+@pytest.mark.parametrize("host,pinned", [("n150", True), ("odroid", False)])
+def test_converge_captures_the_rebuilds_pinned_scope_only_where_it_lives(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, dry_run: bool, host: str, pinned: bool,
+) -> None:
+    """n150의 plane converge는 재구축과 같은 서비스 폐포로 render를 잡는다 — plane이 닿지 않는 서비스(Concierge UI의
+    prebuilt 시작 명령 등)의 계약이 이 명령을 막지 않는다(2026-11-23 n150: 전체 문서 검사가 늘 거부했다).
+    Map·PinVi가 없는 odroid에서는 그 폐포가 늘 "no local owner"라(2026-11-28) #632 전처럼 전체 문서로 잡는다."""
 
+    monkeypatch.setattr(compose_service_module, "current_host", lambda config: host)
     harness.service.converge_shared_dagster_plane(dry_run=dry_run)
 
     assert harness.state.captures and all(
-        capture.get("pinned_runtime_scope") is True for capture in harness.state.captures
+        capture.get("pinned_runtime_scope") is pinned for capture in harness.state.captures
     )
+
+
+def test_odroid_converge_captures_the_whole_document_not_the_n150_pinned_scope(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """2026-11-28 odroid: `dagster-plane converge --dry-run`이 `capture_transaction_unlocked`에서
+    `scoped compose dependency has no local owner`로 거부됐다 — 재구축 폐포의 Map·PinVi·Concierge 뿌리는 odroid에
+    소유자가 없다. converge는 실제 capture로 전체 문서 검증까지 간다(#632 전과 같은 길)."""
+
+    root = Path(__file__).resolve().parents[2]
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", str(root))
+    monkeypatch.setattr(compose_service_module, "current_host", lambda config: "odroid")
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text((root / "docker-compose.yml").read_text())
+    monkeypatch.setattr(
+        compose_service_module, "_capture_pinned_runtime_rebuild_environment_snapshot",
+        lambda: SimpleNamespace(effective=dict(harness.state.environment), compose_path=str(compose)),
+    )
+    monkeypatch.setattr(compose_service_module, "_effective_snapshot_environment", lambda *_: {})
+    monkeypatch.setattr(
+        harness.service, "capture_transaction_unlocked",
+        partial(ComposeService.capture_transaction_unlocked, harness.service),
+    )
+    validations: list[dict[str, Any]] = []
+
+    class Validated(Exception):
+        pass
+
+    def validate(**kwargs: Any) -> None:
+        validations.append(kwargs)
+        raise Validated
+
+    monkeypatch.setattr(harness.service, "_validate_current_compose_candidate_unlocked", validate)
+
+    with pytest.raises(Validated):
+        harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    (validation,) = validations
+    assert "service_scope" not in validation
+    assert not harness.state.compose_calls
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
