@@ -1,3 +1,22 @@
+## 2026-11-28 — odroid `dagster-plane converge`가 n150 전용 pinned 폐포에 막힌다(#632 회귀)
+
+- 증상: #657(`4f7ede8`) 설치 뒤 odroid에서 `sudo -n …/ktdctl dagster-plane converge --dry-run`이 `capture_transaction_unlocked`에서
+  `ComposeCandidateContractError: scoped compose dependency has no local owner`로 거부됐다. plane은 그대로 10-26 instance 파일
+  (`a7d907c4…`, max 5)을 붙이고 있다.
+- 원인: #632(`a8af439`, 2026-11-23)가 converge를 재구축과 같은 pinned 폐포(`_pinned_runtime_compose_scope`)로 잡게 했다. 그 뿌리
+  (Map·PinVi slot·one-shot writer·Concierge API·Map/PinVi Dagster family)는 n150에만 소유자가 있다 — odroid에서는 plane 둘만
+  지역 소유라 converge가 dry-run까지 늘 거부된다. #632 전(10-15 T-MGR-06j부터)은 전체 문서 capture였다.
+- 수정: converge는 Map·PinVi가 이 호스트에 있을 때만(`_pinned_runtime_hosted_here`, registry `host:`) pinned 폐포를 쓰고, 없으면
+  #632 전처럼 전체 문서로 잡는다. n150은 그대로다. 재구축은 odroid에서 종전대로 거부한다. plane `run`/`up`은 어느 쪽이든 호스트
+  소유 검사를 지난다.
+- 검토한 다른 길: plane 폐포만(plane·storage migrate·db-init·공용 PG — 전부 odroid 소유)으로 좁히면 C6c 보호값 검사(Map·PinVi 필수
+  서비스 집합, Map 이미지 provenance)가 범위 밖 서비스를 요구해 거부된다. 그 검사를 호스트별로 푸는 것은 보장을 덜어 내는 변경이라
+  하지 않았다.
+- 운영 읽기 전용 확인(설치본 `4f7ede8` 위에 in-process로 같은 분기를 흉내 낸 dry-run, 아무것도 바꾸지 않음): `outcome: would_recreate`,
+  health 둘 다 healthy, drift는 instance digest `a7d907c4…` → `019a64eb…`·bind·daemon/webserver pool env·로그 상한, 그리고
+  `images`가 셋 다 `kor-travel-dagster-host:fc52552976c61b10 is not on this host` — `--confirm` 전에 arm64 host 이미지 운반(§8.2)이 먼저다.
+- 문서: prod-deployment §8.2 render 폐포(호스트별), "호스트별 공용 instance 상한 보존"의 낡은 odroid WARNING 문장(#634에서 INFO).
+
 ## 2026-11-28 — odroid 공용 Dagster 용량: 전역 5→6, weather location 3→4(ADR-69)
 
 - 출처: weather `W-EXPORT-PREBUILT-CAPACITY-20261126`. 소유자 승인 — A3 export 사전 구성(`weather_export_prebuild_job`)이 우선순위 10

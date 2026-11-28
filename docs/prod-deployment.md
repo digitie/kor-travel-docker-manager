@@ -1076,6 +1076,11 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
 - **범위**: plane 서비스는 설치된 release의 render에서 모양으로 파생한다(`installed_shared_dagster_plane`). 재구축과 같은
   `up -d --no-deps <webserver> <daemon>` 하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
   plane이 실을 location의 옛 Dagster 서비스가 돌면(이중 발화) 거부한다.
+- **render 폐포(호스트별)**: Map·PinVi가 사는 호스트(n150)는 재구축과 같은 pinned 폐포로 frozen render를 잡는다(#632).
+  Map·PinVi가 없는 호스트(odroid)는 전체 문서로 잡는다(#632 전과 같은 길) — pinned 폐포의 뿌리(Map·PinVi slot·one-shot·Concierge)는
+  odroid에 소유자가 없어 dry-run까지 `scoped compose dependency has no local owner`로 거부됐다(2026-11-28). 어느 쪽이든 plane
+  `run`/`up`은 호스트 소유 검사(`_assert_host_mutation_scope`)를 지나므로 이 호스트 소유가 아닌 서비스는 바꾸지 못한다.
+  odroid도 lock·환경 계약은 같다(root `.env`가 `rehearsal/rebuildable`이라 `ensure dagster`는 거부된다).
 - **판정**: 두 컨테이너가 render와 같으면(이미지 ID·env 전부·command·entrypoint, 재구축의 `_shared_plane_current`)
   다시 만들지 않는다. `--confirm`은 재생성했든 안 했든 두 컨테이너가 healthy인지 본다 — 상한은 render healthcheck의
   `start_period + (interval + timeout) × retries + 15초`(가장 긴 서비스, 60~900초; 지금 daemon은 465초 — probe는 앞 probe가
@@ -1407,7 +1412,7 @@ Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend st
 
 ## 호스트별 공용 instance 상한 보존
 
-공식 값은 `config/docker-targets.yml`의 호스트 정책이다. 현재 n1506/Odroid6(2026-11-28 5→6, ADR-69)와 Odroid의 기존 Geo1·Weather4(2026-11-28 3→4)·external_weather2·external_weather_slow1 및 WARNING을 명시 정책으로 유지한다. 기본 tag 목록의 다른 항목과 새 Concierge 안전 한도는 보존하며 `.env`에 별도 숫자·태그·로그 수준이나 독립 YAML path를 두지 않는다. 기존 tracked 기본 YAML은 수정하지 않는다. [구현·한계와 검증 상태](host-dagster-instance-config.md)를 먼저 확인한다.
+공식 값은 `config/docker-targets.yml`의 호스트 정책이다. 현재 n1506/Odroid6(2026-11-28 5→6, ADR-69)와 Odroid의 기존 Geo1·Weather4(2026-11-28 3→4)·external_weather2·external_weather_slow1을 명시 정책으로 유지한다(로그 수준은 기본 INFO — 옛 WARNING 보존은 #634에서 걷었다). 기본 tag 목록의 다른 항목과 새 Concierge 안전 한도는 보존하며 `.env`에 별도 숫자·태그·로그 수준이나 독립 YAML path를 두지 않는다. 기존 tracked 기본 YAML은 수정하지 않는다. [구현·한계와 검증 상태](host-dagster-instance-config.md)를 먼저 확인한다.
 
 정상 trusted installer는 새 release의 `.env` 복사 뒤, preflight와 alias 전환 전에 기존 G FD9로 `dagster-instance-config prepare --json`을 명시 호출한다. prepare는 파일 준비만 하고 공용 plane을 재시작하지 않는다. 기본 6은 원 파일을 사용하며 비기본 구성은 기존 root state 배치에 immutable 0444 파일을 생성한다. 잘못된 기존 파일은 덮어쓰지 않으며 원인을 고친 뒤 같은 공식 설치 절차를 다시 수행한다. 새 NVMe 마운트/부팅 의존성을 만들거나 OS 부팅을 막지 않는다.
 

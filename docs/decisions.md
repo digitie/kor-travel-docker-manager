@@ -2209,7 +2209,8 @@ sweep, 일별 보존)에 잡히거나 전역 5가 차면 슬롯이 빌 때까지
 
 ### 후속
 
-- (open) odroid 적용(소유자): Manager 설치 → `dagster-instance-config show --json`(`max_concurrent_runs` 6) → `dagster-plane converge
+- (open) odroid 적용(소유자): arm64 host 이미지 운반 → Manager 설치(odroid converge 회귀 수정 포함 — #657 설치본은 dry-run부터
+  `no local owner`로 거부, journal 2026-11-28) → `dagster-instance-config show --json`(`max_concurrent_runs` 6) → `dagster-plane converge
   --dry-run`/`--confirm`([prod-deployment.md](prod-deployment.md) §8.2).
 - (open) 배포 뒤 1~2주 관측: load·swap·OOM kill, provider 429, transport·geo queue 대기, role 연결 수, weather 적중률
   (`W-EXPORT-PREBUILT-ACCEPT-20261126`). 나빠지면 두 값을 되돌리는 PR.
